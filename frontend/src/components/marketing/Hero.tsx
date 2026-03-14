@@ -5,7 +5,7 @@ import { Link } from "react-router-dom";
 export const Hero = () => {
   return (
     <section
-      aria-label="RetinaCare AI hero"
+      aria-label="MeddyCare hero"
       className="relative overflow-hidden"
     >
       <div

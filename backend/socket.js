@@ -1,5 +1,5 @@
 /**
- * socket.js — Real-time chat handler for RetinaCare AI
+ * socket.js — Real-time chat handler for MeddyCare
  *
  * Architecture:
  *   - One Socket.io room per consultation: "consultation:<id>"

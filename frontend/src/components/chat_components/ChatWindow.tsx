@@ -36,7 +36,7 @@ export default function ChatWindow({ chatId, onNewChat }: Props) {
   // Welcome message...
   const welcomeMessage: Message = {
     role: "assistant",
-    text: "Welcome to RetinaCare's support — Our assistant can help interpret results, explain next steps, and guide you to relevant resources.",
+    text: "Welcome to MeddyCare's support — Our assistant can help interpret results, explain next steps, and guide you to relevant resources.",
     timestamp: new Date().toISOString(),
   };
 

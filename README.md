@@ -614,7 +614,7 @@ MeddyCare/
 ### 1. Backend
 
 ```bash
-cd MeddyCare/backend
+cd backend
 npm install
 # Create .env with values from the Environment Variables section below
 npm run dev     # nodemon, port 3001
@@ -623,17 +623,16 @@ npm run dev     # nodemon, port 3001
 ### 2. Frontend
 
 ```bash
-cd MeddyCare/frontend
 npm install
 # Create .env.local
 echo "VITE_API_BASE_URL=http://localhost:3001/api/v1" > .env.local
-npm run dev     # Vite, port 5173
+npm run dev     # Vite, port 5174
 ```
 
 ### 3. CNN Service
 
 ```bash
-cd MeddyCare/cnn_service
+cd cnn_service
 pip install fastapi uvicorn tensorflow pillow requests
 # Ensure model.h5 is present
 uvicorn predict_service:app --port 8002 --reload
@@ -642,7 +641,7 @@ uvicorn predict_service:app --port 8002 --reload
 ### 4. RAG Service
 
 ```bash
-cd MeddyCare/rag_service
+cd rag_service
 pip install -r requirements.txt
 uvicorn main:app --port 8600 --reload
 ```
@@ -677,7 +676,7 @@ RAG_SERVICE_URL=http://localhost:8600
 PREDICT_SERVICE_URL=http://localhost:8002
 
 # Frontend (for CORS)
-FRONTEND_URL=http://localhost:5173
+FRONTEND_URL=http://localhost:5174
 
 # Email (optional in dev — falls back to console.log)
 EMAIL_HOST=smtp.gmail.com
@@ -724,7 +723,7 @@ Render (RAG Docker)   — Health education RAG
 
 1. Go to [render.com](https://render.com) → **New Web Service**
 2. Connect GitHub repo, set:
-   - **Root Directory:** `MeddyCare/backend`
+   - **Root Directory:** `./backend`
    - **Build Command:** `npm install`
    - **Start Command:** `npm start`
    - **Environment:** Node
@@ -735,7 +734,7 @@ Render (RAG Docker)   — Health education RAG
 ### Step 3 — Deploy CNN Service on Render
 
 1. **New Web Service** → Docker runtime
-2. Root Directory: `MeddyCare/cnn_service`
+2. Root Directory: `./cnn_service`
 3. Env var: `ICARE_MODEL_PATH=/app/model.h5`
 4. Ensure `model.h5` is committed to the repo (use Git LFS if >100MB)
 
@@ -744,7 +743,7 @@ Render (RAG Docker)   — Health education RAG
 ### Step 4 — Deploy RAG Service on Render
 
 1. **New Web Service** → Docker runtime
-2. Root Directory: `MeddyCare/rag_service`
+2. Root Directory: `./rag_service`
 3. Env vars: `MONGODB_URI`, `GOOGLE_GENAI_API_KEY`, `JWT_SECRET_KEY`, `ALLOWED_ORIGINS`
 
 ---
@@ -752,7 +751,6 @@ Render (RAG Docker)   — Health education RAG
 ### Step 5 — Deploy Frontend on Vercel
 
 ```bash
-cd MeddyCare/frontend
 npx vercel
 # or connect GitHub repo at vercel.com for auto-deploy
 ```

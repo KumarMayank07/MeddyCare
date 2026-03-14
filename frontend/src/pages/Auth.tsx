@@ -535,7 +535,7 @@ export default function Auth() {
         </Card>
 
         <p className="text-center text-xs text-muted-foreground mt-6">
-          © 2026 RetinaCare AI. All rights reserved.
+          © 2026 MeddyCare. All rights reserved.
         </p>
       </div>
     </div>

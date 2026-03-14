@@ -28,7 +28,7 @@ async function sendVerificationEmail(email, _firstName, token) {
   // await transporter.sendMail({
   //   from: process.env.EMAIL_FROM,
   //   to: email,
-  //   subject: "Verify your RetinaCare AI account",
+  //   subject: "Verify your MeddyCare account",
   //   html: `<p>Hi ${firstName},</p>
   //          <p>Click <a href="${verifyUrl}">here</a> to verify your email.</p>`,
   // });

@@ -4,7 +4,7 @@ import { Card } from "@/components/ui/card";
 
 const Index = () => {
   useEffect(() => {
-    document.title = "RetinaCare AI — Diabetic Retinopathy Assistant";
+    document.title = "MeddyCare — AI-Powered Retinal Health Platform";
   }, []);
 
   return (

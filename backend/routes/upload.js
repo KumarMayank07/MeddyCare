@@ -54,7 +54,7 @@ router.post("/image", auth, upload.single("image"), async (req, res) => {
     const dataURI = `data:${req.file.mimetype};base64,${b64}`;
 
     const result = await cloudinary.uploader.upload(dataURI, {
-      folder: "retina-care-ai",
+      folder: "meddycare",
       resource_type: "auto",
       transformation: [
         { width: 800, height: 600, crop: "limit" },
@@ -96,7 +96,7 @@ router.post(
       const dataURI = `data:${req.file.mimetype};base64,${b64}`;
 
       const result = await cloudinary.uploader.upload(dataURI, {
-        folder: "retina-care-ai/profiles",
+        folder: "meddycare/profiles",
         resource_type: "auto",
         transformation: [
           { width: 400, height: 400, crop: "fill", gravity: "face" },
