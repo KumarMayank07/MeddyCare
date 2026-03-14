@@ -1,0 +1,134 @@
+import React, { createContext, useContext, useEffect, useRef, useState } from "react";
+import apiService from "@/lib/api";
+
+interface User {
+  _id: string;
+  email: string;
+  firstName: string;
+  lastName: string;
+  role: "user" | "admin" | "doctor";
+  profileImage?: string;
+  [key: string]: any;
+}
+
+interface AuthContextType {
+  user: User | null;
+  token: string | null; // Add this line
+  loading: boolean;
+  login: (email: string, password: string, role?: string) => Promise<any>;
+  register: (userData: any) => Promise<any>;
+  logout: () => Promise<void>;
+  updateUser: (userData: any) => void;
+}
+
+const AuthContext = createContext<AuthContextType | undefined>(undefined);
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (context === undefined) {
+    throw new Error("useAuth must be used within an AuthProvider");
+  }
+  return context;
+};
+
+interface AuthProviderProps {
+  children: React.ReactNode;
+}
+
+export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
+  const [user, setUser] = useState<User | null>(null);
+  const [token, setToken] = useState<string | null>(null); // Add this line
+  const [loading, setLoading] = useState(true);
+  const logoutRef = useRef<() => Promise<void>>(async () => {});
+
+  // Listen for session expiry dispatched by the API service after a failed token refresh
+  useEffect(() => {
+    const handleExpired = () => { logoutRef.current(); };
+    window.addEventListener("auth-expired", handleExpired);
+    return () => window.removeEventListener("auth-expired", handleExpired);
+  }, []);
+
+  useEffect(() => {
+    const initializeAuth = async () => {
+      try {
+        const savedToken = localStorage.getItem("token");
+        const savedUser = localStorage.getItem("user");
+
+        if (savedToken && savedUser) {
+          apiService.setToken(savedToken);
+          setToken(savedToken); // Add this line
+          setUser(JSON.parse(savedUser));
+
+          // Verify token is still valid
+          try {
+            const { user: currentUser } = await apiService.getCurrentUser();
+            setUser(currentUser);
+          } catch (error) {
+            console.error("Token validation failed:", error);
+            await logout();
+          }
+        }
+      } catch (error) {
+        console.error("Auth initialization error:", error);
+        await logout();
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    initializeAuth();
+  }, []);
+
+  const login = async (email: string, password: string, role?: string) => {
+    try {
+      const response = await apiService.login(email, password, role);
+      setUser(response.user);
+      setToken(response.token || localStorage.getItem("token"));
+      return response;
+    } catch (error) {
+      console.error("Login error:", error);
+      throw error;
+    }
+  };
+
+  const register = async (userData: any) => {
+    try {
+      const response = await apiService.register(userData);
+      setUser(response.user);
+      setToken(response.token || localStorage.getItem("token"));
+      return response;
+    } catch (error) {
+      console.error("Registration error:", error);
+      throw error;
+    }
+  };
+
+  const logout = async () => {
+    try {
+      await apiService.logout();
+    } catch (error) {
+      console.error("Logout error:", error);
+    } finally {
+      setUser(null);
+      setToken(null); // Add this line
+    }
+  };
+  logoutRef.current = logout;
+
+  const updateUser = (userData: any) => {
+    setUser(userData);
+    localStorage.setItem("user", JSON.stringify(userData));
+  };
+
+  const value: AuthContextType = {
+    user,
+    token, // Add this line
+    loading,
+    login,
+    register,
+    logout,
+    updateUser,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+};

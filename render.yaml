@@ -1,0 +1,76 @@
+# Render Configuration File for Automatic Deployment
+# Place this file in root of repository
+
+services:
+  - type: web
+    name: meddycare-backend
+    runtime: node
+    region: ohio
+    rootDir: ./backend
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: GOOGLE_GENAI_API_KEY
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: PREDICT_SERVICE_URL
+        sync: false
+      - key: EMAIL_HOST
+        sync: false
+      - key: EMAIL_PORT
+        sync: false
+      - key: EMAIL_USER
+        sync: false
+      - key: EMAIL_PASS
+        sync: false
+    autoDeploy: true
+    serviceIdleTimeoutMinutes: 15
+
+  - type: web
+    name: meddycare-rag
+    runtime: docker
+    region: ohio
+    rootDir: ./rag_service
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: MONGODB_URI
+        sync: false
+      - key: GOOGLE_GENAI_API_KEY
+        sync: false
+      - key: JWT_SECRET_KEY
+        sync: false
+      - key: ALLOWED_ORIGINS
+        sync: false
+    autoDeploy: true
+    serviceIdleTimeoutMinutes: 15
+
+  - type: web
+    name: meddycare-predict
+    runtime: docker
+    region: ohio
+    rootDir: ./cnn_service
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 8002
+      - key: ICARE_MODEL_PATH
+        value: /app/model.h5
+    autoDeploy: true
+    serviceIdleTimeoutMinutes: 15

@@ -1,0 +1,9 @@
+fastapi==0.95.2
+uvicorn[standard]==0.22.0
+numpy
+pillow
+opencv-python-headless
+requests
+pydantic
+tensorflow==2.18.0
+python-multipart

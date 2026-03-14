@@ -1,0 +1,112 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Core palette */
+    --background: 210 20% 99%;
+    --foreground: 222.2 64% 8%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222.2 64% 8%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222.2 64% 8%;
+
+    /* Brand: clinical teal + deep blue */
+    --primary: 189 90% 32%;  /* teal */
+    --primary-foreground: 0 0% 100%;
+
+    --primary-variant: 222 84% 48%; /* deep medical blue for gradients */
+
+    --secondary: 210 40% 96.1%;
+    --secondary-foreground: 222.2 47.4% 11.2%;
+
+    --muted: 210 28% 96%;
+    --muted-foreground: 215.4 16.3% 46.9%;
+
+    --accent: 189 90% 96%;
+    --accent-foreground: 189 90% 20%;
+
+    --destructive: 0 72% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 214.3 31.8% 91.4%;
+    --input: 214.3 31.8% 91.4%;
+    --ring: 189 90% 32%;
+
+    --radius: 0.8rem;
+
+    /* Sidebar */
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 189 90% 32%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 210 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 189 70% 45%;
+
+    /* Premium touches */
+    --gradient-primary: linear-gradient(135deg, hsl(var(--primary)) 0%, hsl(var(--primary-variant)) 100%);
+    --gradient-hero: radial-gradient(1200px 600px at var(--mouse-x,50%) var(--mouse-y,40%), hsl(var(--primary) / 0.20), transparent 40%), linear-gradient(180deg, hsl(210 40% 98%), hsl(210 40% 96%));
+    --shadow-elevated: 0 10px 30px -10px hsl(var(--primary) / 0.25);
+    --shadow-glow: 0 0 40px hsl(var(--primary-variant) / 0.35);
+    --transition-smooth: all 300ms cubic-bezier(0.4, 0, 0.2, 1);
+  }
+
+  .dark {
+    --background: 222.2 84% 4.9%;
+    --foreground: 210 40% 98%;
+
+    --card: 222.2 84% 6.5%;
+    --card-foreground: 210 40% 98%;
+
+    --popover: 222.2 84% 6.5%;
+    --popover-foreground: 210 40% 98%;
+
+    --primary: 189 84% 54%;
+    --primary-foreground: 222.2 47.4% 11.2%;
+    --primary-variant: 200 90% 62%;
+
+    --secondary: 217.2 32.6% 17.5%;
+    --secondary-foreground: 210 40% 98%;
+
+    --muted: 217.2 32.6% 17.5%;
+    --muted-foreground: 215 20.2% 65.1%;
+
+    --accent: 217.2 32.6% 20.5%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 62.8% 40.6%;
+    --destructive-foreground: 210 40% 98%;
+
+    --border: 217.2 32.6% 17.5%;
+    --input: 217.2 32.6% 17.5%;
+    --ring: 189 84% 54%;
+
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 189 84% 54%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 189 84% 54%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}

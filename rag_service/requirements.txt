@@ -1,0 +1,20 @@
+fastapi>=0.100.0      # pydantic v2 compatible FastAPI
+uvicorn[standard]==0.22.0
+python-dotenv
+certifi
+motor                  # async Mongo driver
+pymongo                # Mongo driver (sync; needed for some admin tasks)
+pydantic>=2.0.0,<3.0.0
+python-multipart
+google-genai==1.30.0   # Gemini / GenAI SDK
+pypdf
+beautifulsoup4
+aiohttp
+requests
+tqdm
+python-jose[cryptography]
+sentence-transformers  # optional: for local embedding models (dev)
+numpy
+scikit-learn           # for cosine similarity helper (dev)
+pytz
+google-generativeai
