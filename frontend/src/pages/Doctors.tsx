@@ -113,6 +113,12 @@ export default function Doctors() {
   const [bookingForm, setBookingForm] = useState({ date: "", reason: "", notes: "" });
   const [bookingLoading, setBookingLoading] = useState(false);
 
+  // Rating modal
+  const [ratingDoctor, setRatingDoctor] = useState<Doctor | null>(null);
+  const [ratingValue, setRatingValue] = useState(0);
+  const [ratingComment, setRatingComment] = useState("");
+  const [ratingLoading, setRatingLoading] = useState(false);
+
   // Load app doctors on mount
   useEffect(() => {
     loadAppDoctors();
@@ -203,6 +209,26 @@ export default function Doctors() {
       toast({ title: "Booking failed", description: err instanceof Error ? err.message : "Try again", variant: "destructive" });
     } finally {
       setBookingLoading(false);
+    }
+  };
+
+  const handleSubmitRating = async () => {
+    if (!ratingDoctor || ratingValue === 0) {
+      toast({ title: "Select a star rating", variant: "destructive" });
+      return;
+    }
+    setRatingLoading(true);
+    try {
+      await apiService.addReview(ratingDoctor._id, { rating: ratingValue, comment: ratingComment || undefined });
+      toast({ title: "Review submitted!", description: `You rated Dr. ${ratingDoctor.user.firstName} ${ratingValue} star${ratingValue > 1 ? "s" : ""}.` });
+      setRatingDoctor(null);
+      setRatingValue(0);
+      setRatingComment("");
+      loadAppDoctors();
+    } catch (err: unknown) {
+      toast({ title: "Rating failed", description: err instanceof Error ? err.message : "Try again", variant: "destructive" });
+    } finally {
+      setRatingLoading(false);
     }
   };
 
@@ -360,9 +386,14 @@ export default function Doctors() {
                     )}
                   </div>
 
-                  <Button className="w-full mt-2" onClick={() => setBookingDoctor(doctor)}>
-                    Book Appointment
-                  </Button>
+                  <div className="flex gap-2 mt-2">
+                    <Button className="flex-1" onClick={() => setBookingDoctor(doctor)}>
+                      Book Appointment
+                    </Button>
+                    <Button variant="outline" className="gap-1.5 px-3" onClick={() => { setRatingDoctor(doctor); setRatingValue(0); setRatingComment(""); }}>
+                      <Star className="w-3.5 h-3.5" /> Rate
+                    </Button>
+                  </div>
                 </CardContent>
               </Card>
             ))}
@@ -593,6 +624,42 @@ export default function Doctors() {
             </Button>
             <Button onClick={handleBookAppointment} disabled={bookingLoading}>
               {bookingLoading ? <><Loader2 className="h-4 w-4 animate-spin mr-1" />Booking...</> : "Confirm Booking"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* ── Rate Doctor Dialog ── */}
+      <Dialog open={!!ratingDoctor} onOpenChange={(open) => !open && setRatingDoctor(null)}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Rate Dr. {ratingDoctor?.user.firstName} {ratingDoctor?.user.lastName}</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div className="space-y-2">
+              <Label>Your Rating</Label>
+              <div className="flex gap-1">
+                {[1, 2, 3, 4, 5].map((star) => (
+                  <button key={star} type="button" onClick={() => setRatingValue(star)} className="focus:outline-none">
+                    <Star className={`w-8 h-8 transition-colors ${star <= ratingValue ? "text-yellow-500 fill-yellow-500" : "text-muted-foreground"}`} />
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="rating-comment">Comment (optional)</Label>
+              <Input
+                id="rating-comment"
+                placeholder="Share your experience..."
+                value={ratingComment}
+                onChange={(e) => setRatingComment(e.target.value)}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setRatingDoctor(null)} disabled={ratingLoading}>Cancel</Button>
+            <Button onClick={handleSubmitRating} disabled={ratingLoading || ratingValue === 0}>
+              {ratingLoading ? <><Loader2 className="h-4 w-4 animate-spin mr-1" />Submitting...</> : "Submit Rating"}
             </Button>
           </DialogFooter>
         </DialogContent>

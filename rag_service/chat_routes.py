@@ -48,7 +48,7 @@ def get_client_time(timezone_str: str = 'UTC'):
 
 def build_system_prompt():
     return (
-        "You are iCare assistant specialized in diabetic retinopathy and eye health. "
+        "You are MeddyCare assistant specialized in diabetic retinopathy and eye health. "
         "You provide helpful, evidence-based general medical information and recommend seeing an eye specialist when appropriate. "
         "Always include a short disclaimer that you are not making a diagnosis and encourage professional consultation."
     )
@@ -505,13 +505,13 @@ async def get_shared_chat(token: str, request: Request, format: str = None):
         )
 
     # Build HTML page with Open Graph meta for previews
-    site_title = getattr(config, "SITE_TITLE", "iCare")
+    site_title = getattr(config, "SITE_TITLE", "MeddyCare")
     share_url = str(request.url)
     first_text = ""
     if len(simplified) > 0:
         first_text = simplified[0].get("text", "")[:300]
     escaped_title = html_escape.escape(chat.get("title") or f"{site_title} chat")
-    escaped_desc = html_escape.escape(first_text or "Shared iCare conversation")
+    escaped_desc = html_escape.escape(first_text or "Shared MeddyCare conversation")
     escaped_site = html_escape.escape(site_title)
 
     html_content = f"""<!doctype html>

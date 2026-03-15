@@ -8,7 +8,7 @@ import logging
 from fastapi.middleware.cors import CORSMiddleware
 
 
-app = FastAPI(title="iCare - RAG Chat Service")
+app = FastAPI(title="MeddyCare RAG Service")
 
 # --- CORS ---
 app.add_middleware(
@@ -28,7 +28,7 @@ app.include_router(chat_router, prefix="/api/rag", tags=["rag"])
 # simple root
 @app.get("/")
 def root():
-    return {"status": "iCare RAG service", "ok": True}
+    return {"status": "MeddyCare RAG service", "ok": True}
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)

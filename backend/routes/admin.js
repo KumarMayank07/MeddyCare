@@ -283,6 +283,11 @@ router.patch('/users/:id/suspend', adminAuth, async (req, res) => {
     user.isSuspended = isSuspended;
     await user.save();
 
+    // Kick the user out in real-time if they are currently online
+    if (isSuspended) {
+      emitToUser(user._id.toString(), 'account_suspended', {});
+    }
+
     await logAction(
       req,
       isSuspended ? 'USER_SUSPENDED' : 'USER_UNSUSPENDED',

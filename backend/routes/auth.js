@@ -5,6 +5,14 @@ import { body, validationResult } from "express-validator";
 import User from "../models/User.js";
 import Doctor from "../models/Doctor.js";
 import { auth } from "../middleware/auth.js";
+import { emitToUser } from "../socket.js";
+
+async function notifyAdmins(event, data = {}) {
+  try {
+    const admins = await User.find({ role: "admin" }).select("_id");
+    admins.forEach(a => emitToUser(a._id.toString(), event, data));
+  } catch { /* non-critical */ }
+}
 
 const router = express.Router();
 
@@ -99,6 +107,8 @@ router.post(
       const token = generateToken(user);
       user.lastLogin = new Date();
       await user.save();
+
+      notifyAdmins("admin_stats_updated", { type: "new_user" });
 
       res.status(201).json({
         message: "User registered successfully. Please verify your email.",
@@ -209,6 +219,8 @@ router.post(
       const token = generateToken(user);
       user.lastLogin = new Date();
       await user.save();
+
+      notifyAdmins("admin_stats_updated", { type: "new_doctor" });
 
       res.status(201).json({
         message: "Doctor registered successfully. Your account is pending admin verification.",

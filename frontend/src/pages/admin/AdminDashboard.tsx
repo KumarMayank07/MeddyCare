@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,6 +25,7 @@ import {
   CalendarCheck, UserX, UserCheck, Activity, Star, Heart, UserPlus,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useSocket } from "@/hooks/use-socket";
 import apiService from "@/lib/api";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -75,8 +76,10 @@ type PendingAction =
 
 export default function AdminDashboard() {
   const { toast } = useToast();
+  const { socket } = useSocket();
   const [tab, setTab] = useState<Tab>("overview");
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
+  const tabRef = useRef(tab);
 
   // ── Overview ──────────────────────────────────────────────────────────────
   const [stats, setStats]         = useState<any>(null);
@@ -93,6 +96,30 @@ export default function AdminDashboard() {
   }, []);
 
   useEffect(() => { loadStats(); }, []);
+
+  // Keep tabRef in sync so the socket handler can read current tab without stale closure
+  useEffect(() => { tabRef.current = tab; }, [tab]);
+
+  // Re-fetch stats when switching back to overview
+  useEffect(() => { if (tab === "overview") loadStats(); }, [tab]);
+
+  // 30-second polling fallback
+  useEffect(() => {
+    const id = setInterval(loadStats, 30_000);
+    return () => clearInterval(id);
+  }, [loadStats]);
+
+  // Real-time: backend emits admin_stats_updated when new user/doctor registers
+  useEffect(() => {
+    if (!socket) return;
+    const onUpdate = () => {
+      loadStats();
+      if (tabRef.current === "doctors") loadDoctors();
+      if (tabRef.current === "users") loadUsers();
+    };
+    socket.on("admin_stats_updated", onUpdate);
+    return () => { socket.off("admin_stats_updated", onUpdate); };
+  }, [socket]);
 
   // ── Doctors ───────────────────────────────────────────────────────────────
   const [doctors, setDoctors]         = useState<any[]>([]);
@@ -822,8 +849,8 @@ export default function AdminDashboard() {
                               nameKey="label"
                               cx="50%"
                               cy="50%"
-                              outerRadius={70}
-                              label={({ label, percent }: any) => `${label} ${(percent * 100).toFixed(0)}%`}
+                              outerRadius={65}
+                              label={false}
                               labelLine={false}
                             >
                               {analytics.patientRiskTiers.map((entry: any, i: number) => (

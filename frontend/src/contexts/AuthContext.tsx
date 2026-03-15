@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useRef, useState } from "react";
 import apiService from "@/lib/api";
+import { useSocket } from "@/hooks/use-socket";
 
 interface User {
   _id: string;
@@ -40,12 +41,35 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [token, setToken] = useState<string | null>(null); // Add this line
   const [loading, setLoading] = useState(true);
   const logoutRef = useRef<() => Promise<void>>(async () => {});
+  const { socket } = useSocket();
 
   // Listen for session expiry dispatched by the API service after a failed token refresh
   useEffect(() => {
     const handleExpired = () => { logoutRef.current(); };
     window.addEventListener("auth-expired", handleExpired);
     return () => window.removeEventListener("auth-expired", handleExpired);
+  }, []);
+
+  // Real-time: instantly kick suspended users via socket
+  useEffect(() => {
+    if (!socket) return;
+    const onSuspended = () => { logoutRef.current(); };
+    socket.on("account_suspended", onSuspended);
+    return () => { socket.off("account_suspended", onSuspended); };
+  }, [socket]);
+
+  // Polling fallback: re-verify session every 60s so suspension takes effect even without socket
+  useEffect(() => {
+    const id = setInterval(async () => {
+      if (!localStorage.getItem("token")) return;
+      try {
+        await apiService.getCurrentUser();
+      } catch {
+        // 401 (expired) or 403 (suspended) — both mean force-logout
+        logoutRef.current();
+      }
+    }, 60_000);
+    return () => clearInterval(id);
   }, []);
 
   useEffect(() => {

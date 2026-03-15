@@ -659,7 +659,7 @@ export default function DoctorDashboard() {
   }, [profile, statusFilter, tab]);
 
   useEffect(() => {
-    if (profile && tab === "appointments") loadAppointments();
+    if (profile) loadAppointments();
   }, [profile, tab]);
 
   // Real-time: reload when backend pushes events to this doctor's user room

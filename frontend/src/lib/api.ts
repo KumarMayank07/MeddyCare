@@ -67,6 +67,15 @@ class ApiService {
       }
     }
 
+    // 403 with "suspended" message → force logout immediately
+    if (response.status === 403) {
+      const errorData = await response.json().catch(() => ({}));
+      if (typeof errorData.error === "string" && errorData.error.toLowerCase().includes("suspended")) {
+        window.dispatchEvent(new CustomEvent("auth-expired"));
+        throw new Error(errorData.error);
+      }
+    }
+
     if (!response.ok) {
       const errorData = await response.json().catch(() => ({}));
       const message =

@@ -584,14 +584,14 @@ export default function ChatSidebar({
             >
               <img
                 src="/vision_icon.png"
-                alt="iCare"
+                alt="MeddyCare"
                 className="w-7 h-7 rounded-full object-cover"
               />
             </div>
 
             {isOpen && (
               <div className="flex flex-col">
-                <span className="font-bold text-base select-none">iCare</span>
+                <span className="font-bold text-base select-none">MeddyCare</span>
                 <span className="text-xs text-muted-foreground select-none">
                   Eye health assistant
                 </span>
