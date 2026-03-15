@@ -2,7 +2,7 @@
 import uvicorn
 from fastapi import FastAPI
 from chat_routes import router as chat_router
-from config import PORT, GOOGLE_GENAI_API_KEY, GOOGLE_GENAI_MODEL, ALLOWED_ORIGINS
+from config import PORT, GOOGLE_GENAI_API_KEY, GOOGLE_GENAI_MODEL, ALLOWED_ORIGINS, ALLOWED_ORIGIN_REGEX
 from google import genai
 import logging
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,6 +14,7 @@ app = FastAPI(title="MeddyCare RAG Service")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=ALLOWED_ORIGIN_REGEX or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
