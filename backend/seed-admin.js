@@ -14,7 +14,7 @@ import User from './models/User.js';
 
 dotenv.config();
 
-const ADMIN_EMAIL    = 'meddycare.app@gmail.com';
+const ADMIN_EMAIL    = 'meddycare111@gmail.com';
 const ADMIN_PASSWORD = 'Mayank2001@';
 const ADMIN_FIRST    = 'Meddy';
 const ADMIN_LAST     = 'Admin';

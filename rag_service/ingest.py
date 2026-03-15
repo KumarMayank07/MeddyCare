@@ -19,9 +19,7 @@ async def get_embedding_for_chunk(text: str):
         result = client.models.embed_content(model=EMBEDDING_MODEL, contents=text)
         return result.embeddings[0].values
     except Exception as e:
-        print(f"Embedding error for chunk: {e}")
-        import random
-        return [random.uniform(-0.1, 0.1) for _ in range(3072)]
+        raise Exception(f"Embedding failed: {e}")
 
 async def upsert_document_chunks(doc_id: str, chunks: list):
     """Convert chunks to embeddings and store them"""

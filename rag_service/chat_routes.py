@@ -105,19 +105,9 @@ async def delete_document(doc_id: str, user=Depends(get_current_user)):
         raise HTTPException(status_code=403, detail="Admin privileges required to delete documents.")
     # remove metadata from Mongo
     delete_result = await documents_col.delete_one({"_id": doc_id})
-    # try to remove points from Qdrant / vectorstore
-    try:
-        from vectorstore import _qclient, COLLECTION_NAME
-        # delete all points with payload.doc_id == doc_id (use filter)
-        # qdrant client supports delete with filter
-        from qdrant_client.http import models as qmodels
-        filt = qmodels.Filter(
-            must=[qmodels.FieldCondition(key="doc_id", match=qmodels.MatchValue(value=doc_id))]
-        )
-        _qclient.delete(collection_name=COLLECTION_NAME, points_selector=qmodels.PointIdsSelector(ids=[]), wait=True, filter=filt)
-    except Exception:
-        # best-effort; do not fail deletion if vector removal fails
-        pass
+    # remove all chunks (embeddings) for this document from vector store
+    from vectorstore_mongo import chunks_col as _chunks_col
+    _chunks_col.delete_many({"doc_id": doc_id})
     return {"status": "deleted", "deleted_count": delete_result.deleted_count}
 
 # Chat endpoint (RAG)
@@ -166,8 +156,8 @@ async def chat_endpoint(req: ChatRequest, user=Depends(get_current_user)):
             print(f"DEBUG: Got embedding, length: {len(query_embedding)}")
         except Exception as e:
             print(f"DEBUG: Embedding failed: {e}")
-            # Use mock embedding for now
-            query_embedding = [0.1] * 768
+            # fallback: zero vector (matches embedding dimension)
+            query_embedding = [0.0] * 3072
         
         try:
             hits = search_similar_local(query_embedding, top_k=topk)
