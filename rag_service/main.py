@@ -26,7 +26,7 @@ genai_client = genai.Client(api_key=GOOGLE_GENAI_API_KEY)
 app.include_router(chat_router, prefix="/api/rag", tags=["rag"])
 
 # simple root
-@app.get("/")
+@app.api_route("/", methods=["GET", "HEAD"])
 def root():
     return {"status": "MeddyCare RAG service", "ok": True}
 
