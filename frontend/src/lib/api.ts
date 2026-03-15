@@ -164,6 +164,8 @@ class ApiService {
     city?: string;
     state?: string;
     country?: string;
+    lat?: number;
+    lng?: number;
   }) {
     const response = await this.request<{ token: string; user: any; message: string }>(
       "/auth/register-doctor",

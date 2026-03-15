@@ -154,6 +154,8 @@ router.post(
         city,
         state,
         country,
+        lat,
+        lng,
       } = req.body;
 
       const existingUser = await User.findOne({ email });
@@ -179,9 +181,12 @@ router.post(
       });
       await user.save();
 
-      // Geocode city → real [lng, lat] coordinates using Nominatim (free, no key)
+      // Use GPS coordinates directly if provided, otherwise fall back to geocoding city name
       let coordinates = [0, 0];
-      if (city) {
+      if (lat !== undefined && lng !== undefined) {
+        // Frontend sent precise GPS coords — MongoDB GeoJSON stores [lng, lat]
+        coordinates = [parseFloat(lng), parseFloat(lat)];
+      } else if (city) {
         try {
           const geoRes = await fetch(
             `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(city)}&format=json&limit=1`,
@@ -189,7 +194,6 @@ router.post(
           );
           const geoData = await geoRes.json();
           if (geoData.length > 0) {
-            // Nominatim returns lat/lon; MongoDB GeoJSON stores [lng, lat]
             coordinates = [parseFloat(geoData[0].lon), parseFloat(geoData[0].lat)];
           }
         } catch (geoErr) {

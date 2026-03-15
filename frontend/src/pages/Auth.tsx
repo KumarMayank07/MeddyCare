@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import apiService from "@/lib/api";
-import { Eye, EyeOff, ChevronDown } from "lucide-react";
+import { Eye, EyeOff, ChevronDown, MapPin, Loader2, CheckCircle } from "lucide-react";
 
 type Role = "user" | "doctor" | "admin";
 
@@ -53,7 +53,46 @@ export default function Auth() {
   const [docSpecialization, setDocSpecialization] = useState(SPECIALIZATIONS[0]);
   const [docLicense, setDocLicense] = useState("");
   const [docExperience, setDocExperience] = useState("");
-  const [docCity, setDocCity] = useState("");
+  const [docCoords, setDocCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [docLocationLabel, setDocLocationLabel] = useState("");
+  const [locLoading, setLocLoading] = useState(false);
+
+  const getLocation = () => {
+    if (!navigator.geolocation) {
+      toast({ title: "Not supported", description: "Your browser doesn't support geolocation.", variant: "destructive" });
+      return;
+    }
+    setLocLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setDocCoords({ lat: latitude, lng: longitude });
+        // Reverse geocode to get a human-readable label
+        try {
+          const res = await fetch(
+            `https://nominatim.openstreetmap.org/reverse?lat=${latitude}&lon=${longitude}&format=json`,
+            { headers: { "User-Agent": "MeddyCare-App/1.0" } }
+          );
+          const data = await res.json();
+          const addr = data.address || {};
+          const label = addr.city || addr.town || addr.village || addr.county || addr.state || "Location detected";
+          setDocLocationLabel(label);
+        } catch {
+          setDocLocationLabel("Location detected");
+        }
+        setLocLoading(false);
+      },
+      (err) => {
+        setLocLoading(false);
+        const msg =
+          err.code === 1 ? "Location permission denied. Please allow access in your browser." :
+          err.code === 2 ? "Location unavailable. Try again." :
+          "Location request timed out.";
+        toast({ title: "Could not get location", description: msg, variant: "destructive" });
+      },
+      { timeout: 10000 }
+    );
+  };
 
   const redirectByRole = (role: string) => {
     if (role === "admin") navigate("/admin");
@@ -117,8 +156,8 @@ export default function Auth() {
       toast({ title: "Invalid experience", description: "Enter a valid number of years.", variant: "destructive" });
       return;
     }
-    if (!docCity.trim()) {
-      toast({ title: "City is required", description: "We need your city to show you on the map for patients.", variant: "destructive" });
+    if (!docCoords) {
+      toast({ title: "Location is required", description: "Please share your location so patients can find you on the map.", variant: "destructive" });
       return;
     }
     setLoading(true);
@@ -132,7 +171,9 @@ export default function Auth() {
         specialization: docSpecialization,
         licenseNumber: docLicense,
         experience: Number(docExperience),
-        city: docCity.trim(),
+        lat: docCoords.lat,
+        lng: docCoords.lng,
+        city: docLocationLabel,
       });
       // Update AuthContext so ProtectedRoute lets the user through
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -470,19 +511,37 @@ export default function Auth() {
               </div>
 
               <div className="space-y-1.5">
-                <Label htmlFor="doc-city">
-                  City <span className="text-destructive">*</span>
+                <Label>
+                  Location <span className="text-destructive">*</span>
                   <span className="text-xs text-muted-foreground ml-1">— used to show you on the map</span>
                 </Label>
-                <Input
-                  id="doc-city"
-                  type="text"
-                  placeholder="e.g. Mumbai, Delhi, Bengaluru"
-                  value={docCity}
-                  onChange={(e) => setDocCity(e.target.value)}
-                  required
-                  disabled={loading}
-                />
+                {docCoords ? (
+                  <div className="flex items-center gap-2 h-10 px-3 rounded-md border border-input bg-muted/40 text-sm">
+                    <CheckCircle size={15} className="text-green-500 shrink-0" />
+                    <span className="flex-1 truncate text-foreground">{docLocationLabel}</span>
+                    <button
+                      type="button"
+                      onClick={() => { setDocCoords(null); setDocLocationLabel(""); }}
+                      className="text-xs text-muted-foreground hover:text-foreground shrink-0"
+                      disabled={loading}
+                    >
+                      Change
+                    </button>
+                  </div>
+                ) : (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="w-full justify-start gap-2 font-normal text-muted-foreground"
+                    onClick={getLocation}
+                    disabled={locLoading || loading}
+                  >
+                    {locLoading
+                      ? <><Loader2 size={15} className="animate-spin" /> Detecting location...</>
+                      : <><MapPin size={15} /> Use my current location</>
+                    }
+                  </Button>
+                )}
               </div>
 
               <div className="space-y-1.5">
