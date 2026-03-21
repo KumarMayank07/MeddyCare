@@ -1,4 +1,8 @@
 import { useState, useEffect, useRef } from "react";
+import {
+  LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid,
+  Tooltip, ResponsiveContainer, Cell,
+} from "recharts";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -10,7 +14,7 @@ import {
 import {
   CheckCircle, Clock, ClipboardList, Users, Star, Phone, Mail,
   MapPin, Plus, Trash2, Send, ChevronRight, AlertCircle, Loader2, ImageIcon,
-  CalendarCheck, Calendar, XCircle, Navigation,
+  CalendarCheck, Calendar, XCircle, Navigation, BarChart2,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import apiService from "@/lib/api";
@@ -20,6 +24,7 @@ import {
   type SocketTypingPayload,
   type SocketConsultationUpdatedPayload,
 } from "@/hooks/use-socket";
+import { useNotifications } from "@/contexts/NotificationContext";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -43,7 +48,7 @@ const WEEK_DAYS = ["monday","tuesday","wednesday","thursday","friday","saturday"
 function buildAvailability(doc: DoctorProfile): Record<string, AvailSlot> {
   const result: Record<string, AvailSlot> = {};
   for (const day of WEEK_DAYS) {
-    result[day] = doc.availability?.[day] ?? { available: false, start: "09:00", end: "17:00" };
+    result[day] = { available: false, start: "09:00", end: "17:00", ...doc.availability?.[day] };
   }
   return result;
 }
@@ -73,7 +78,14 @@ interface Consultation {
   doctorNotes?: string;
 }
 
-type Tab = "overview" | "consultations" | "appointments" | "profile";
+type Tab = "overview" | "consultations" | "appointments" | "analytics" | "profile";
+
+interface AnalyticsData {
+  consultations: { total: number; pending: number; in_review: number; completed: number; cancelled: number };
+  consultationsOverTime: { date: string; count: number }[];
+  rating: { average: number; count: number; distribution: { star: number; count: number }[] };
+  patientRiskTiers: { stage: number; label: string; count: number }[];
+}
 type StatusFilter = "all" | "pending" | "in_review" | "completed" | "cancelled";
 
 const STAGE_COLORS = ["#10b981", "#3b82f6", "#eab308", "#f97316", "#ef4444"];
@@ -145,6 +157,7 @@ function ConsultationDetail({
 }: { consultation: Consultation; onUpdate: (c: Consultation) => void }) {
   const { toast }                         = useToast();
   const { socket, connected }             = useSocket();
+  const { setActiveConsultation }         = useNotifications();
   const messagesEndRef                    = useRef<HTMLDivElement>(null);
   const imageInputRef                     = useRef<HTMLInputElement>(null);
   const typingTimerRef                    = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -153,6 +166,7 @@ function ConsultationDetail({
   const [messages, setMessages]           = useState<Message[]>([]);
   const [typingLabel, setTypingLabel]     = useState<string | null>(null);
 
+  const [innerTab, setInnerTab]           = useState<"chat" | "diagnosis">("chat");
   const [diagFindings, setDiagFindings]   = useState(consultation.diagnosis?.findings ?? "");
   const [diagSeverity, setDiagSeverity]   = useState(consultation.diagnosis?.severity ?? "");
   const [diagRecs, setDiagRecs]           = useState(consultation.diagnosis?.recommendations ?? "");
@@ -167,22 +181,40 @@ function ConsultationDetail({
   const [imgUploading, setImgUploading]   = useState(false);
   const [statusLoading, setStatusLoading] = useState(false);
 
+  // ── Stable timestamp sort ───────────────────────────────────────────────────
+  const sortByTs = (msgs: Message[]) =>
+    [...msgs].sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
   // ── Socket room management ──────────────────────────────────────────────────
   useEffect(() => {
     if (!socket) return;
 
     socket.emit("join_consultation", { consultationId: consultation._id });
+    setActiveConsultation(consultation._id);
 
     const onMessageReceived = (payload: SocketMessageReceivedPayload) => {
       if (payload.consultationId !== consultation._id) return;
       setMessages(prev => {
-        // Deduplicate by _id
+        // Deduplicate by _id — server echoes back to sender too
         if (prev.some(m => m._id === payload.message._id)) return prev;
-        // Replace matching optimistic message (no _id, same text + senderRole)
-        const withoutOptimistic = prev.filter(m =>
-          !(m._id === undefined && m.text === payload.message.text && m.senderRole === payload.message.senderRole)
-        );
-        return [...withoutOptimistic, payload.message as unknown as Message];
+        // Replace the ONE optimistic placeholder that matches this echo:
+        // match on text + senderRole + no _id, but only remove the FIRST match so
+        // two identical consecutive messages aren't both wiped by the first echo.
+        let replaced = false;
+        const withoutOptimistic = prev.filter(m => {
+          if (
+            !replaced &&
+            m._id === undefined &&
+            m.text === payload.message.text &&
+            m.senderRole === payload.message.senderRole
+          ) {
+            replaced = true;
+            return false; // drop this one placeholder
+          }
+          return true;
+        });
+        // Insert at correct chronological position instead of blindly appending
+        return sortByTs([...withoutOptimistic, payload.message as unknown as Message]);
       });
     };
 
@@ -209,6 +241,7 @@ function ConsultationDetail({
       socket.off("message_received",     onMessageReceived);
       socket.off("typing_status",        onTyping);
       socket.off("consultation_updated", onConsultationUpdated);
+      setActiveConsultation(null);
     };
   }, [socket, consultation._id]);
 
@@ -217,10 +250,11 @@ function ConsultationDetail({
     setMessages([]);
     apiService.getConsultationMessages(consultation._id)
       .then(({ messages: loaded }) => setMessages(prev => {
-        // Merge: keep any socket-delivered messages not in the loaded set
+        // Keep any socket-delivered messages that arrived while the fetch was in flight
         const loadedIds = new Set((loaded as Message[]).map(m => m._id).filter(Boolean));
         const socketOnly = prev.filter(m => m._id && !loadedIds.has(m._id));
-        return [...(loaded as Message[]), ...socketOnly];
+        // Sort the merged result so socket-arrived messages land in the right position
+        return sortByTs([...(loaded as Message[]), ...socketOnly]);
       }))
       .catch(() => {});
   }, [consultation._id]);
@@ -322,297 +356,323 @@ function ConsultationDetail({
   const r = consultation.report;
 
   return (
-    <div className="space-y-4 overflow-y-auto max-h-[calc(100vh-220px)] pr-1">
+    <div className="flex flex-col border border-border rounded-xl overflow-hidden bg-card shadow-sm" style={{ height: "calc(100vh - 230px)" }}>
 
-      {/* Patient info */}
-      <Card>
-        <CardHeader className="pb-2"><CardTitle className="text-base">Patient</CardTitle></CardHeader>
-        <CardContent className="space-y-1 text-sm">
-          <p className="font-semibold">{p.firstName} {p.lastName}</p>
-          <p className="text-muted-foreground">{p.email}</p>
-          {(p.gender || p.dateOfBirth) && (
-            <p className="text-muted-foreground capitalize">
-              {p.gender}{p.gender && p.dateOfBirth && " · "}{p.dateOfBirth && `${patientAge(p.dateOfBirth)} yrs`}
-            </p>
-          )}
-          {consultation.patientMessage && (
-            <div className="mt-2 p-3 bg-muted/50 rounded-md border">
-              <p className="text-xs font-medium text-muted-foreground mb-1">Patient's message</p>
-              <p>{consultation.patientMessage}</p>
+      {/* ── Top strip: patient + status + inner tabs ── */}
+      <div className="shrink-0 border-b border-border bg-muted/20">
+        {/* Patient row */}
+        <div className="flex items-center justify-between gap-3 px-5 py-3 flex-wrap">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-9 h-9 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold text-sm shrink-0">
+              {p.firstName[0]}{p.lastName[0]}
             </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Retina report */}
-      <Card>
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <CardTitle className="text-base">Retina Report</CardTitle>
-              <p className="text-xs font-mono text-muted-foreground mt-0.5">
-                ID&nbsp;
-                <span className="font-semibold select-all" style={{ color: STAGE_COLORS[r.stage] }}>
-                  #{r._id.slice(-10).toUpperCase()}
-                </span>
-                <span className="text-muted-foreground/50 ml-1">({r._id.slice(-6).toUpperCase()})</span>
+            <div className="min-w-0">
+              <p className="font-semibold text-sm leading-tight">{p.firstName} {p.lastName}</p>
+              <p className="text-xs text-muted-foreground truncate">
+                {p.email}
+                {(p.gender || p.dateOfBirth) && <span className="ml-2 capitalize">{p.gender}{p.gender && p.dateOfBirth && " · "}{p.dateOfBirth && `${patientAge(p.dateOfBirth)} yrs`}</span>}
               </p>
             </div>
-            <span
-              className="text-xs px-2 py-1 rounded-full border font-semibold shrink-0"
-              style={{
-                backgroundColor: STAGE_COLORS[r.stage] + "22",
-                color: STAGE_COLORS[r.stage],
-                borderColor: STAGE_COLORS[r.stage] + "55",
-              }}
+          </div>
+          <div className="flex items-center gap-2 shrink-0 flex-wrap">
+            <span className={`text-xs px-2.5 py-1 rounded-full border font-semibold capitalize ${STATUS_COLORS[consultation.status]}`}>
+              {consultation.status.replace("_", " ")}
+            </span>
+            {isOpen && consultation.status === "pending" && (
+              <>
+                <Button size="sm" className="h-7 text-xs gap-1 bg-blue-600 hover:bg-blue-700" onClick={() => handleStatusChange("in_review")} disabled={statusLoading}>
+                  {statusLoading ? <Loader2 className="w-3 h-3 animate-spin" /> : <ClipboardList className="w-3 h-3" />} Start Review
+                </Button>
+                <Button size="sm" variant="destructive" className="h-7 text-xs gap-1" onClick={() => handleStatusChange("cancelled")} disabled={statusLoading}>
+                  <XCircle className="w-3 h-3" /> Decline
+                </Button>
+              </>
+            )}
+            <span className={`text-xs px-2 py-0.5 rounded-full border ${connected ? "text-green-600 border-green-300 bg-green-50 dark:bg-green-950/30 dark:border-green-800" : "text-gray-400 border-gray-300 bg-gray-50"}`}>
+              {connected ? "● Live" : "○ Offline"}
+            </span>
+          </div>
+        </div>
+        {/* Inner tab bar */}
+        <div className="flex border-t border-border">
+          {[
+            { key: "chat" as const, label: "Report & Chat" },
+            { key: "diagnosis" as const, label: isCompleted ? "Diagnosis & Rx" : "Write Diagnosis" },
+          ].map(({ key, label }) => (
+            <button
+              key={key}
+              onClick={() => setInnerTab(key)}
+              className={`flex-1 py-2.5 text-xs font-semibold transition-colors border-b-2 ${
+                innerTab === key
+                  ? "border-primary text-primary bg-background"
+                  : "border-transparent text-muted-foreground hover:text-foreground hover:bg-muted/40"
+              }`}
             >
-              Stage {r.stage} — {r.stageLabel}
-            </span>
-          </div>
-          {r.confidence != null && (
-            <CardDescription>{(r.confidence * 100).toFixed(1)}% model confidence</CardDescription>
-          )}
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <img src={r.imageUrl} alt="Retina scan" className="w-full rounded-lg border-2 border-border object-contain max-h-64 bg-black" />
-          <ProbabilityBars probabilities={r.probabilities} />
-          <p className="text-sm text-muted-foreground bg-muted/50 p-3 rounded-md border leading-relaxed">{r.reportText}</p>
-        </CardContent>
-      </Card>
+              {label}
+              {key === "diagnosis" && isOpen && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">Pending</span>}
+              {key === "diagnosis" && isCompleted && <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-400">Done</span>}
+            </button>
+          ))}
+        </div>
+      </div>
 
-      {/* Messages */}
-      <Card>
-        <CardHeader className="pb-2">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-base">Messages</CardTitle>
-            <span className={`text-xs px-2 py-0.5 rounded-full border ${connected ? "text-green-600 border-green-300 bg-green-50" : "text-gray-400 border-gray-200 bg-gray-50"}`}>
-              {connected ? "Live" : "Offline"}
-            </span>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-2 max-h-44 overflow-y-auto mb-3">
-            {messages.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-3">No messages yet.</p>
-            ) : messages.map((msg, i) => {
-              const isDoc = msg.senderRole === "doctor";
-              return (
-                <div key={msg._id ?? i} className={`flex ${isDoc ? "justify-end" : "justify-start"}`}>
-                  <div className={`max-w-[80%] px-3 py-2 rounded-xl text-sm ${
-                    isDoc ? "bg-emerald-600 text-white rounded-br-none" : "bg-sky-500 text-white rounded-bl-none"
-                  }`}>
-                    <p className="text-xs font-semibold mb-0.5 opacity-80">
-                      {isDoc ? "You (Dr.)" : consultation.patient.firstName}
-                    </p>
-                    {msg.type === "image" && msg.imageUrl ? (
-                      <img src={msg.imageUrl} alt={msg.text ?? "image"} className="rounded-md max-w-full mb-1 max-h-32 object-cover" />
-                    ) : null}
-                    <p>{msg.text}</p>
-                    <p className="text-xs opacity-60 mt-0.5">
-                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-                    </p>
-                  </div>
-                </div>
-              );
-            })}
-            <div ref={messagesEndRef} />
-          </div>
-          {typingLabel && (
-            <p className="text-xs text-muted-foreground italic mb-2 pl-1">{typingLabel}</p>
-          )}
-          {consultation.status !== "cancelled" && (
-            <div className="flex gap-2">
-              <input
-                ref={imageInputRef}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={handleImageShare}
-              />
-              <Button
-                size="icon"
-                variant="outline"
-                onClick={() => imageInputRef.current?.click()}
-                disabled={imgUploading || !connected}
-                title="Share image"
-              >
-                {imgUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
-              </Button>
-              <Input
-                placeholder={connected ? "Message patient..." : "Connecting…"}
-                value={msgContent}
-                onChange={(e) => handleMsgInput(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSendMessage()}
-                disabled={!connected}
-                className="flex-1"
-              />
-              <Button size="icon" onClick={handleSendMessage} disabled={!connected || !msgContent.trim()}>
-                <Send className="w-4 h-4" />
-              </Button>
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      {/* ── Tab: Report & Chat ── */}
+      {innerTab === "chat" && (
+        <div className="flex flex-1 min-h-0 divide-x divide-border">
 
-      {/* Diagnosis — view (completed) */}
-      {isCompleted && consultation.diagnosis && (
-        <Card>
-          <CardHeader className="pb-2"><CardTitle className="text-base">Diagnosis</CardTitle></CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            <div>
-              <p className="text-xs font-medium text-muted-foreground mb-1">FINDINGS</p>
-              <p className="bg-muted/50 p-3 rounded-md border">{consultation.diagnosis.findings}</p>
-            </div>
-            <div className="flex gap-6">
-              <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">SEVERITY</p>
-                <Badge variant="outline" className="capitalize">{consultation.diagnosis.severity}</Badge>
+          {/* Left: retina + patient message */}
+          <div className="w-[280px] shrink-0 flex flex-col overflow-y-auto">
+            <div className="p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">Retina Scan</p>
+                <span className="text-[11px] px-2 py-0.5 rounded-full border font-bold"
+                  style={{ backgroundColor: STAGE_COLORS[r.stage] + "22", color: STAGE_COLORS[r.stage], borderColor: STAGE_COLORS[r.stage] + "55" }}>
+                  Stage {r.stage} — {r.stageLabel}
+                </span>
               </div>
-              {consultation.prescription?.followUpDate && (
+              <img src={r.imageUrl} alt="Retina" className="w-full rounded-xl border border-border object-contain bg-black" style={{ maxHeight: 180 }} />
+              {r.confidence != null && (
+                <p className="text-xs text-muted-foreground text-center">{(r.confidence * 100).toFixed(1)}% model confidence</p>
+              )}
+              <ProbabilityBars probabilities={r.probabilities} />
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">AI Report</p>
+                <p className="text-xs text-muted-foreground leading-relaxed bg-muted/40 p-3 rounded-lg border border-border">{r.reportText}</p>
+              </div>
+              {consultation.patientMessage && (
                 <div>
-                  <p className="text-xs font-medium text-muted-foreground mb-1">FOLLOW-UP</p>
-                  <p>{new Date(consultation.prescription.followUpDate).toLocaleDateString()}</p>
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-1.5">Patient's Message</p>
+                  <p className="text-xs bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800 text-sky-900 dark:text-sky-200 p-3 rounded-lg leading-relaxed">{consultation.patientMessage}</p>
                 </div>
               )}
             </div>
-            {consultation.diagnosis.recommendations && (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">RECOMMENDATIONS</p>
-                <p>{consultation.diagnosis.recommendations}</p>
-              </div>
-            )}
-            {(consultation.prescription?.medications?.length ?? 0) > 0 && (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground mb-2">PRESCRIPTION</p>
-                <div className="space-y-1">
-                  {consultation.prescription!.medications.map((m, i) => (
-                    <div key={i} className="text-xs bg-muted p-2 rounded-md">
-                      <span className="font-semibold">{m.name}</span> · {m.dosage} · {m.frequency} · {m.duration}
-                    </div>
-                  ))}
+          </div>
+
+          {/* Right: full-height chat */}
+          <div className="flex-1 flex flex-col min-w-0">
+            <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+              {messages.length === 0 ? (
+                <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
+                  <div className="p-3 bg-muted rounded-2xl"><Send className="h-5 w-5 text-muted-foreground" /></div>
+                  <p className="text-sm text-muted-foreground">No messages yet.<br />Send a message to start the conversation.</p>
                 </div>
-                {consultation.prescription?.instructions && (
-                  <p className="text-muted-foreground mt-1 text-xs">{consultation.prescription.instructions}</p>
-                )}
+              ) : (
+                messages.map((msg, i) => {
+                  const isDoc = msg.senderRole === "doctor";
+                  return (
+                    <div key={msg._id ?? i} className={`flex items-end gap-2 ${isDoc ? "justify-end" : "justify-start"}`}>
+                      {!isDoc && (
+                        <div className="w-7 h-7 rounded-full bg-sky-100 dark:bg-sky-900/50 border border-sky-200 dark:border-sky-700 flex items-center justify-center shrink-0 mb-0.5">
+                          <span className="text-[10px] font-bold text-sky-700 dark:text-sky-300">{p.firstName[0]}</span>
+                        </div>
+                      )}
+                      <div className={`max-w-[72%] px-3.5 py-2.5 rounded-2xl text-sm shadow-sm ${
+                        isDoc ? "bg-emerald-600 text-white rounded-br-sm" : "bg-muted border border-border text-foreground rounded-bl-sm"
+                      }`}>
+                        <p className={`text-[11px] font-semibold mb-1 ${isDoc ? "text-emerald-200" : "text-muted-foreground"}`}>
+                          {isDoc ? "You (Dr.)" : p.firstName}
+                        </p>
+                        {msg.type === "image" && msg.imageUrl && (
+                          <img src={msg.imageUrl} alt={msg.text ?? "image"} className="rounded-lg max-w-full mb-1 max-h-40 object-cover" />
+                        )}
+                        {msg.text && <p className="leading-snug">{msg.text}</p>}
+                        <p className={`text-[10px] mt-1 ${isDoc ? "text-emerald-300" : "text-muted-foreground"}`}>
+                          {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                        </p>
+                      </div>
+                      {isDoc && (
+                        <div className="w-7 h-7 rounded-full bg-emerald-100 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 flex items-center justify-center shrink-0 mb-0.5">
+                          <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300">Dr</span>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+              <div ref={messagesEndRef} />
+            </div>
+            {typingLabel && <p className="text-xs text-muted-foreground italic px-4 pb-1">{typingLabel}</p>}
+            {consultation.status !== "cancelled" ? (
+              <div className="px-4 py-3 border-t border-border bg-background shrink-0">
+                <div className="flex gap-2 items-center">
+                  <input ref={imageInputRef} type="file" accept="image/*" className="hidden" onChange={handleImageShare} />
+                  <Button size="icon" variant="outline" className="h-9 w-9 shrink-0 rounded-xl" onClick={() => imageInputRef.current?.click()} disabled={imgUploading || !connected}>
+                    {imgUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
+                  </Button>
+                  <Input
+                    placeholder={connected ? "Message patient…" : "Connecting…"}
+                    value={msgContent}
+                    onChange={(e) => handleMsgInput(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && handleSendMessage()}
+                    disabled={!connected}
+                    className="flex-1 rounded-xl"
+                  />
+                  <Button size="icon" className="h-9 w-9 shrink-0 rounded-xl bg-emerald-600 hover:bg-emerald-700" onClick={handleSendMessage} disabled={!connected || !msgContent.trim()}>
+                    <Send className="w-4 h-4" />
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="px-4 py-3 border-t border-border bg-muted/20 shrink-0 text-center">
+                <p className="text-xs text-muted-foreground">This consultation is closed.</p>
               </div>
             )}
-            {consultation.doctorNotes && (
-              <div>
-                <p className="text-xs font-medium text-muted-foreground mb-1">NOTES</p>
-                <p>{consultation.doctorNotes}</p>
-              </div>
-            )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       )}
 
-      {/* Diagnosis — form (open) */}
-      {isOpen && (
-        <Card>
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Write Diagnosis & Prescription</CardTitle>
-            <CardDescription>Submitting will mark the consultation as completed.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {consultation.status === "pending" && (
-              <div className="flex gap-2 flex-wrap">
-                <Button size="sm" variant="outline" onClick={() => handleStatusChange("in_review")} disabled={statusLoading}>
-                  {statusLoading && <Loader2 className="w-3 h-3 animate-spin mr-1" />} Mark In Review
-                </Button>
-                <Button
-                  size="sm" variant="ghost"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => handleStatusChange("cancelled")}
-                  disabled={statusLoading}
-                >
-                  Cancel
-                </Button>
-              </div>
-            )}
-
-            <div className="space-y-1.5">
-              <Label>Findings <span className="text-destructive">*</span></Label>
-              <textarea
-                className="w-full min-h-[80px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Describe what you observe in the retina scan..."
-                value={diagFindings}
-                onChange={(e) => setDiagFindings(e.target.value)}
-              />
-            </div>
-
-            <div className="space-y-1.5">
-              <Label>Severity <span className="text-destructive">*</span></Label>
-              <Select value={diagSeverity} onValueChange={setDiagSeverity}>
-                <SelectTrigger><SelectValue placeholder="Select severity" /></SelectTrigger>
-                <SelectContent>
-                  {["normal", "mild", "moderate", "severe", "critical"].map(s => (
-                    <SelectItem key={s} value={s} className="capitalize">{s}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label>Recommendations</Label>
-              <textarea
-                className="w-full min-h-[60px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Treatment plan, lifestyle advice..."
-                value={diagRecs}
-                onChange={(e) => setDiagRecs(e.target.value)}
-              />
-            </div>
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label>Medications</Label>
-                <Button size="sm" variant="outline"
-                  onClick={() => setMedications([...medications, { name: "", dosage: "", frequency: "", duration: "" }])}>
-                  <Plus className="w-3 h-3 mr-1" /> Add
-                </Button>
-              </div>
-              {medications.length > 0 && (
-                <>
-                  <div className="grid grid-cols-5 gap-2 text-xs text-muted-foreground px-1">
-                    <span>Name</span><span>Dosage</span><span>Frequency</span><span>Duration</span><span />
+      {/* ── Tab: Diagnosis ── */}
+      {innerTab === "diagnosis" && (
+        <div className="flex-1 overflow-y-auto p-6">
+          {isCompleted && consultation.diagnosis ? (
+            <div className="grid md:grid-cols-2 gap-6 max-w-4xl">
+              <div className="space-y-4">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Doctor's Diagnosis</p>
+                  <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-xl p-4 space-y-2 text-sm">
+                    <p><span className="font-semibold text-emerald-800 dark:text-emerald-300">Findings:</span> <span className="text-emerald-700 dark:text-emerald-400">{consultation.diagnosis.findings}</span></p>
+                    <p><span className="font-semibold text-emerald-800 dark:text-emerald-300">Severity:</span> <span className="text-emerald-700 dark:text-emerald-400 capitalize">{consultation.diagnosis.severity}</span></p>
+                    {consultation.diagnosis.recommendations && (
+                      <p><span className="font-semibold text-emerald-800 dark:text-emerald-300">Recommendations:</span> <span className="text-emerald-700 dark:text-emerald-400">{consultation.diagnosis.recommendations}</span></p>
+                    )}
                   </div>
-                  {medications.map((med, i) => (
-                    <MedicationRow
-                      key={i} med={med}
-                      onChange={(u) => { const c = [...medications]; c[i] = u; setMedications(c); }}
-                      onRemove={() => setMedications(medications.filter((_, j) => j !== i))}
-                    />
-                  ))}
-                </>
+                </div>
+                {consultation.doctorNotes && (
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Doctor's Notes</p>
+                    <p className="text-sm bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 text-blue-900 dark:text-blue-200 p-4 rounded-xl">{consultation.doctorNotes}</p>
+                  </div>
+                )}
+              </div>
+              {consultation.prescription && (consultation.prescription.followUpDate || consultation.prescription.instructions || (consultation.prescription.medications?.length ?? 0) > 0) && (
+                <div className="space-y-4">
+                  <div>
+                    <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Prescription</p>
+                    <div className="bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800 rounded-xl p-4 space-y-3 text-sm">
+                      {consultation.prescription.followUpDate && (
+                        <div className="flex items-center gap-2">
+                          <Calendar className="h-4 w-4 text-violet-600 shrink-0" />
+                          <span className="font-semibold text-violet-800 dark:text-violet-300">Follow-up:</span>
+                          <span className="text-violet-700 dark:text-violet-400">{new Date(consultation.prescription.followUpDate).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}</span>
+                        </div>
+                      )}
+                      {consultation.prescription.instructions && (
+                        <p><span className="font-semibold text-violet-800 dark:text-violet-300">Instructions:</span> <span className="text-violet-700 dark:text-violet-400">{consultation.prescription.instructions}</span></p>
+                      )}
+                      {(consultation.prescription.medications?.length ?? 0) > 0 && (
+                        <div className="space-y-1.5">
+                          <p className="text-xs font-semibold text-violet-800 dark:text-violet-300">Medications</p>
+                          {consultation.prescription!.medications.map((m, i) => (
+                            <div key={i} className="text-xs text-violet-700 dark:text-violet-400 bg-violet-100/50 dark:bg-violet-900/20 px-3 py-1.5 rounded-lg flex gap-2 flex-wrap">
+                              <span className="font-semibold">{m.name}</span>
+                              {m.dosage && <span>· {m.dosage}</span>}
+                              {m.frequency && <span>· {m.frequency}</span>}
+                              {m.duration && <span>· {m.duration}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
               )}
             </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-1.5">
-                <Label>Prescription Instructions</Label>
-                <Input placeholder="e.g. Take with food" value={rxInstructions} onChange={(e) => setRxInstructions(e.target.value)} />
+          ) : isOpen ? (
+            <div className="space-y-5 max-w-4xl">
+              <div className="grid md:grid-cols-2 gap-5">
+                {/* Left column */}
+                <div className="space-y-4">
+                  <div className="space-y-1.5">
+                    <Label>Findings <span className="text-destructive">*</span></Label>
+                    <textarea
+                      className="w-full min-h-[100px] rounded-xl border border-input bg-muted/30 px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                      placeholder="Describe what you observe in the retina scan…"
+                      value={diagFindings}
+                      onChange={(e) => setDiagFindings(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Severity <span className="text-destructive">*</span></Label>
+                    <Select value={diagSeverity} onValueChange={setDiagSeverity}>
+                      <SelectTrigger className="rounded-xl"><SelectValue placeholder="Select severity" /></SelectTrigger>
+                      <SelectContent>
+                        {["normal", "mild", "moderate", "severe", "critical"].map(s => (
+                          <SelectItem key={s} value={s} className="capitalize">{s}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Recommendations</Label>
+                    <textarea
+                      className="w-full min-h-[80px] rounded-xl border border-input bg-muted/30 px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                      placeholder="Treatment plan, lifestyle advice…"
+                      value={diagRecs}
+                      onChange={(e) => setDiagRecs(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>Doctor Notes <span className="text-xs text-muted-foreground font-normal">(private)</span></Label>
+                    <textarea
+                      className="w-full min-h-[72px] rounded-xl border border-input bg-muted/30 px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
+                      placeholder="Internal notes not shared with patient…"
+                      value={doctorNotes}
+                      onChange={(e) => setDoctorNotes(e.target.value)}
+                    />
+                  </div>
+                </div>
+                {/* Right column */}
+                <div className="space-y-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label>Follow-up Date</Label>
+                      <Input type="date" value={followUpDate} onChange={(e) => setFollowUpDate(e.target.value)} className="rounded-xl" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Rx Instructions</Label>
+                      <Input placeholder="e.g. Take with food" value={rxInstructions} onChange={(e) => setRxInstructions(e.target.value)} className="rounded-xl" />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <Label>Medications</Label>
+                      <Button size="sm" variant="outline" className="h-7 text-xs rounded-lg gap-1" onClick={() => setMedications([...medications, { name: "", dosage: "", frequency: "", duration: "" }])}>
+                        <Plus className="w-3 h-3" /> Add
+                      </Button>
+                    </div>
+                    {medications.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="grid grid-cols-5 gap-1.5 text-[10px] text-muted-foreground px-0.5">
+                          <span>Name</span><span>Dosage</span><span>Frequency</span><span>Duration</span><span />
+                        </div>
+                        {medications.map((med, i) => (
+                          <MedicationRow key={i} med={med}
+                            onChange={(u) => { const arr = [...medications]; arr[i] = u; setMedications(arr); }}
+                            onRemove={() => setMedications(medications.filter((_, j) => j !== i))}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {medications.length === 0 && (
+                      <p className="text-xs text-muted-foreground bg-muted/30 p-3 rounded-xl border border-dashed text-center">No medications added yet.</p>
+                    )}
+                  </div>
+                </div>
               </div>
-              <div className="space-y-1.5">
-                <Label>Follow-up Date</Label>
-                <Input type="date" value={followUpDate} onChange={(e) => setFollowUpDate(e.target.value)} />
+              <Button onClick={handleDiagnose} disabled={diagLoading} size="lg" className="bg-emerald-600 hover:bg-emerald-700 gap-2 w-full md:w-auto">
+                {diagLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <CheckCircle className="w-4 h-4" />}
+                Submit Diagnosis & Complete Consultation
+              </Button>
+            </div>
+          ) : (
+            <div className="flex items-center justify-center h-full text-center">
+              <div>
+                <XCircle className="w-10 h-10 mx-auto mb-2 text-muted-foreground opacity-40" />
+                <p className="text-sm text-muted-foreground">This consultation was cancelled.</p>
               </div>
             </div>
-
-            <div className="space-y-1.5">
-              <Label>Doctor Notes (private)</Label>
-              <textarea
-                className="w-full min-h-[60px] rounded-md border border-input bg-background px-3 py-2 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                placeholder="Internal notes..."
-                value={doctorNotes}
-                onChange={(e) => setDoctorNotes(e.target.value)}
-              />
-            </div>
-
-            <Button onClick={handleDiagnose} disabled={diagLoading} className="w-full">
-              {diagLoading ? <Loader2 className="w-4 h-4 animate-spin mr-2" /> : <CheckCircle className="w-4 h-4 mr-2" />}
-              Submit Diagnosis & Complete
-            </Button>
-          </CardContent>
-        </Card>
+          )}
+        </div>
       )}
     </div>
   );
@@ -635,6 +695,9 @@ export default function DoctorDashboard() {
 
   const [appointments, setAppointments]         = useState<any[]>([]);
   const [apptLoading, setApptLoading]           = useState(false);
+
+  const [analytics, setAnalytics]               = useState<AnalyticsData | null>(null);
+  const [analyticsLoading, setAnalyticsLoading] = useState(false);
 
   // Profile edit
   const [editMode, setEditMode]         = useState(false);
@@ -662,19 +725,48 @@ export default function DoctorDashboard() {
     if (profile) loadAppointments();
   }, [profile, tab]);
 
+  useEffect(() => {
+    if (tab === "analytics" && profile) loadAnalytics();
+  }, [tab, profile]);
+
   // Real-time: reload when backend pushes events to this doctor's user room
   useEffect(() => {
     if (!socket) return;
+
+    // New items arriving — reload the relevant list
     const onNewConsultation = () => loadConsultations();
     const onNewAppointment  = () => loadAppointments();
     const onProfileUpdated  = () => loadProfile();
-    socket.on('new_consultation', onNewConsultation);
-    socket.on('new_appointment',  onNewAppointment);
-    socket.on('profile_updated',  onProfileUpdated);
+
+    // Patient cancelled an appointment → update its status instantly in the list
+    const onAppointmentUpdated = (payload: { appointmentId: string; status: string }) => {
+      setAppointments(prev =>
+        prev.map(a => a._id === payload.appointmentId ? { ...a, status: payload.status } : a)
+      );
+    };
+
+    // Consultation status changed (e.g. patient cancelled) → update list + selected panel
+    const onConsultationUpdated = (payload: { consultationId: string; status: string }) => {
+      setConsultations(prev =>
+        prev.map(c => c._id === payload.consultationId ? { ...c, status: payload.status as Consultation["status"] } : c)
+      );
+      setSelected(prev =>
+        prev?._id === payload.consultationId ? { ...prev, status: payload.status as Consultation["status"] } : prev
+      );
+    };
+
+    socket.on('new_consultation',    onNewConsultation);
+    socket.on('new_appointment',     onNewAppointment);
+    socket.on('profile_updated',     onProfileUpdated);
+    socket.on('appointment_updated', onAppointmentUpdated);
+    socket.on('consultation_updated', onConsultationUpdated);
+
     return () => {
-      socket.off('new_consultation', onNewConsultation);
-      socket.off('new_appointment',  onNewAppointment);
-      socket.off('profile_updated',  onProfileUpdated);
+      socket.off('new_consultation',    onNewConsultation);
+      socket.off('new_appointment',     onNewAppointment);
+      socket.off('profile_updated',     onProfileUpdated);
+      socket.off('appointment_updated', onAppointmentUpdated);
+      socket.off('consultation_updated', onConsultationUpdated);
     };
   }, [socket]);
 
@@ -792,6 +884,16 @@ export default function DoctorDashboard() {
     }));
   };
 
+  const loadAnalytics = async () => {
+    setAnalyticsLoading(true);
+    try {
+      const data = await apiService.getDoctorAnalytics();
+      setAnalytics(data);
+    } catch (err: unknown) {
+      toast({ title: "Failed to load analytics", description: err instanceof Error ? err.message : "", variant: "destructive" });
+    } finally { setAnalyticsLoading(false); }
+  };
+
   const handleUpdate = (updated: Consultation) => {
     setConsultations(prev => prev.map(c => c._id === updated._id ? updated : c));
     setSelected(updated);
@@ -812,6 +914,7 @@ export default function DoctorDashboard() {
     { key: "overview",      label: "Overview" },
     { key: "consultations", label: `Consultations${stats.pending > 0 ? ` (${stats.pending})` : ""}` },
     { key: "appointments",  label: `Appointments${pendingAppts > 0 ? ` (${pendingAppts})` : ""}` },
+    { key: "analytics",     label: "Analytics" },
     { key: "profile",       label: "Profile" },
   ];
 
@@ -841,8 +944,11 @@ export default function DoctorDashboard() {
       {/* Header */}
       <div className="flex items-start justify-between">
         <div className="flex items-center gap-4">
-          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-2xl font-bold shadow-lg">
-            {profile.user.firstName[0]}
+          <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-white text-2xl font-bold shadow-lg overflow-hidden">
+            {profile.user.profileImage
+              ? <img src={profile.user.profileImage} alt="avatar" className="w-full h-full object-cover" />
+              : profile.user.firstName[0]
+            }
           </div>
           <div>
             <h1 className="text-2xl font-bold text-foreground">Dr. {profile.user.firstName} {profile.user.lastName}</h1>
@@ -1111,6 +1217,130 @@ export default function DoctorDashboard() {
         </div>
       )}
 
+      {/* ── Analytics ── */}
+      {tab === "analytics" && (
+        <div className="space-y-6">
+          {analyticsLoading ? (
+            <div className="flex justify-center py-16">
+              <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
+            </div>
+          ) : !analytics ? (
+            <div className="text-center py-16 text-muted-foreground">
+              <BarChart2 className="w-10 h-10 mx-auto mb-2 opacity-40" />
+              <p className="text-sm">No analytics data available.</p>
+            </div>
+          ) : (
+            <>
+              {/* KPI cards */}
+              <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+                {[
+                  { label: "Total",      value: analytics.consultations.total,      color: "text-primary",    bg: "bg-primary/10",    border: "border-l-primary" },
+                  { label: "Pending",    value: analytics.consultations.pending,    color: "text-yellow-500", bg: "bg-yellow-500/10", border: "border-l-yellow-500" },
+                  { label: "In Review",  value: analytics.consultations.in_review,  color: "text-blue-500",   bg: "bg-blue-500/10",   border: "border-l-blue-500" },
+                  { label: "Completed",  value: analytics.consultations.completed,  color: "text-green-500",  bg: "bg-green-500/10",  border: "border-l-green-500" },
+                  { label: "Cancelled",  value: analytics.consultations.cancelled,  color: "text-gray-400",   bg: "bg-gray-400/10",   border: "border-l-gray-400" },
+                ].map(({ label, value, color, bg, border }) => (
+                  <Card key={label} className={`p-5 border-l-4 ${border}`}>
+                    <div className={`inline-flex p-2 rounded-lg ${bg} mb-2`}>
+                      <ClipboardList className={`w-5 h-5 ${color}`} />
+                    </div>
+                    <p className="text-2xl font-bold">{value}</p>
+                    <p className="text-xs text-muted-foreground mt-0.5">{label}</p>
+                  </Card>
+                ))}
+              </div>
+
+              {/* Charts row */}
+              <div className="grid md:grid-cols-2 gap-6">
+                {/* Consultations over time */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base font-semibold">Consultations — Last 30 Days</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    {analytics.consultationsOverTime.length === 0 ? (
+                      <p className="text-sm text-muted-foreground text-center py-10">No data for the last 30 days.</p>
+                    ) : (
+                      <ResponsiveContainer width="100%" height={200}>
+                        <LineChart data={analytics.consultationsOverTime} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                          <XAxis dataKey="date" tick={{ fontSize: 10 }} tickFormatter={(v) => v.slice(5)} />
+                          <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
+                          <Tooltip
+                            contentStyle={{ fontSize: 12, borderRadius: 8 }}
+                            labelFormatter={(v) => new Date(v).toLocaleDateString()}
+                          />
+                          <Line
+                            type="monotone"
+                            dataKey="count"
+                            stroke="hsl(var(--primary))"
+                            strokeWidth={2}
+                            dot={{ r: 3 }}
+                            activeDot={{ r: 5 }}
+                          />
+                        </LineChart>
+                      </ResponsiveContainer>
+                    )}
+                  </CardContent>
+                </Card>
+
+                {/* Rating distribution */}
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base font-semibold">
+                      Rating Distribution
+                      <span className="ml-2 text-sm font-normal text-muted-foreground">
+                        avg {analytics.rating.average.toFixed(1)} ★ ({analytics.rating.count} reviews)
+                      </span>
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <ResponsiveContainer width="100%" height={200}>
+                      <BarChart data={analytics.rating.distribution} margin={{ top: 4, right: 8, bottom: 0, left: -20 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                        <XAxis dataKey="star" tick={{ fontSize: 10 }} tickFormatter={(v) => `${v}★`} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 10 }} />
+                        <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} formatter={(v) => [v, "Reviews"]} />
+                        <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                          {analytics.rating.distribution.map((_, i) => (
+                            <Cell key={i} fill={["#ef4444","#f97316","#eab308","#3b82f6","#10b981"][i]} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {/* Patient risk tiers */}
+              {analytics.patientRiskTiers.length > 0 && (
+                <Card>
+                  <CardHeader>
+                    <CardTitle className="text-base font-semibold">Patient Risk Distribution</CardTitle>
+                    <CardDescription>DR stage breakdown across all consultations</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    <ResponsiveContainer width="100%" height={180}>
+                      <BarChart data={analytics.patientRiskTiers} layout="vertical" margin={{ top: 4, right: 40, bottom: 0, left: 60 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" horizontal={false} />
+                        <XAxis type="number" allowDecimals={false} tick={{ fontSize: 10 }} />
+                        <YAxis type="category" dataKey="label" tick={{ fontSize: 11 }} />
+                        <Tooltip contentStyle={{ fontSize: 12, borderRadius: 8 }} formatter={(v) => [v, "Patients"]} />
+                        <Bar dataKey="count" radius={[0, 4, 4, 0]}>
+                          {analytics.patientRiskTiers.map((tier) => (
+                            <Cell key={tier.stage} fill={STAGE_COLORS[tier.stage] ?? "#6b7280"} />
+                          ))}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </CardContent>
+                </Card>
+              )}
+            </>
+          )}
+        </div>
+      )}
+
       {/* ── Profile ── */}
       {tab === "profile" && (
         <div className="grid md:grid-cols-2 gap-6">
@@ -1283,47 +1513,73 @@ export default function DoctorDashboard() {
             <CardContent>
               <div className="space-y-2">
                 {WEEK_DAYS.map(day => {
-                  const isAvailable = availEditMode
-                    ? editAvailability[day]?.available
-                    : (profile.availability?.[day]?.available ?? false);
+                  const slot = { available: false, start: "09:00", end: "17:00", ...(availEditMode ? editAvailability[day] : profile.availability?.[day]) };
+                  const isAvailable = slot?.available ?? false;
                   return (
                     <div
                       key={day}
-                      className={`flex items-center justify-between px-4 py-3 rounded-xl border-2 transition-all ${
+                      className={`px-4 py-3 rounded-xl border-2 transition-all ${
                         isAvailable
                           ? "bg-green-500/10 border-green-500/40"
                           : "bg-red-500/5 border-red-400/30"
                       }`}
                     >
-                      <div className="flex items-center gap-3">
-                        {isAvailable
-                          ? <CheckCircle className="w-5 h-5 text-green-500 shrink-0" />
-                          : <XCircle className="w-5 h-5 text-red-400 shrink-0" />
-                        }
-                        <span className={`capitalize font-semibold text-sm ${isAvailable ? "text-foreground" : "text-muted-foreground"}`}>
-                          {day}
-                        </span>
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3">
+                          {isAvailable
+                            ? <CheckCircle className="w-5 h-5 text-green-500 shrink-0" />
+                            : <XCircle className="w-5 h-5 text-red-400 shrink-0" />
+                          }
+                          <span className={`capitalize font-semibold text-sm ${isAvailable ? "text-foreground" : "text-muted-foreground"}`}>
+                            {day}
+                          </span>
+                        </div>
+                        {availEditMode ? (
+                          <button
+                            type="button"
+                            onClick={() => toggleDayAvailability(day)}
+                            className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                              isAvailable
+                                ? "bg-red-500 hover:bg-red-600 text-white"
+                                : "bg-green-500 hover:bg-green-600 text-white"
+                            }`}
+                          >
+                            {isAvailable ? "Mark Off" : "Mark On"}
+                          </button>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            {isAvailable && (
+                              <span className="text-xs text-muted-foreground font-medium">
+                                {slot?.start} – {slot?.end}
+                              </span>
+                            )}
+                            <span className={`text-xs font-semibold px-3 py-1 rounded-full ${
+                              isAvailable
+                                ? "bg-green-500/20 text-green-600 dark:text-green-400"
+                                : "bg-red-500/10 text-red-400"
+                            }`}>
+                              {isAvailable ? "Available" : "Off"}
+                            </span>
+                          </div>
+                        )}
                       </div>
-                      {availEditMode ? (
-                        <button
-                          type="button"
-                          onClick={() => toggleDayAvailability(day)}
-                          className={`px-4 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-                            isAvailable
-                              ? "bg-red-500 hover:bg-red-600 text-white"
-                              : "bg-green-500 hover:bg-green-600 text-white"
-                          }`}
-                        >
-                          {isAvailable ? "Mark Off" : "Mark On"}
-                        </button>
-                      ) : (
-                        <span className={`text-xs font-semibold px-3 py-1 rounded-full ${
-                          isAvailable
-                            ? "bg-green-500/20 text-green-600 dark:text-green-400"
-                            : "bg-red-500/10 text-red-400"
-                        }`}>
-                          {isAvailable ? "Available" : "Off"}
-                        </span>
+                      {availEditMode && isAvailable && (
+                        <div className="flex items-center gap-3 mt-2 pl-8">
+                          <label className="text-xs text-muted-foreground">From</label>
+                          <input
+                            type="time"
+                            value={slot?.start ?? "09:00"}
+                            onChange={e => updateSlotTime(day, "start", e.target.value)}
+                            className="text-xs bg-background border border-border rounded-md px-2 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                          <label className="text-xs text-muted-foreground">To</label>
+                          <input
+                            type="time"
+                            value={slot?.end ?? "17:00"}
+                            onChange={e => updateSlotTime(day, "end", e.target.value)}
+                            className="text-xs bg-background border border-border rounded-md px-2 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                          />
+                        </div>
                       )}
                     </div>
                   );

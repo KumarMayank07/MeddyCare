@@ -22,7 +22,7 @@ import {
   Users, FileText, Stethoscope, CheckCircle, XCircle, Loader2,
   ShieldCheck, Clock, ClipboardList, TrendingUp, Search,
   AlertTriangle, Eye, ChevronLeft, ChevronRight,
-  CalendarCheck, UserX, UserCheck, Activity, Star, Heart, UserPlus,
+  CalendarCheck, UserX, UserCheck, Activity, Star, Heart, UserPlus, Download,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { useSocket } from "@/hooks/use-socket";
@@ -49,6 +49,22 @@ const ACTION_COLORS: Record<string, string> = {
   USER_UNSUSPENDED:  "bg-blue-100 text-blue-800 border-blue-200",
   ADMIN_CREATED:     "bg-purple-100 text-purple-800 border-purple-200",
 };
+
+// ─── CSV export helper ────────────────────────────────────────────────────────
+
+function exportCSV(data: any[], filename: string, columns: { key: string; label: string }[]) {
+  const getVal = (row: any, key: string) =>
+    key.split(".").reduce((o, k) => o?.[k], row) ?? "";
+  const header = columns.map(c => `"${c.label}"`).join(",");
+  const rows = data.map(row =>
+    columns.map(c => `"${String(getVal(row, c.key)).replace(/"/g, '""')}"`).join(",")
+  );
+  const blob = new Blob([[header, ...rows].join("\n")], { type: "text/csv" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
 
 // ─── Pagination bar ───────────────────────────────────────────────────────────
 
@@ -95,12 +111,10 @@ export default function AdminDashboard() {
     } finally { setStatsLoading(false); }
   }, []);
 
-  useEffect(() => { loadStats(); }, []);
-
   // Keep tabRef in sync so the socket handler can read current tab without stale closure
   useEffect(() => { tabRef.current = tab; }, [tab]);
 
-  // Re-fetch stats when switching back to overview
+  // Re-fetch stats when switching to overview (also fires on mount since initial tab is "overview")
   useEffect(() => { if (tab === "overview") loadStats(); }, [tab]);
 
   // 30-second polling fallback
@@ -125,19 +139,22 @@ export default function AdminDashboard() {
   const [doctors, setDoctors]         = useState<any[]>([]);
   const [doctorsLoading, setDoctorsLoading] = useState(false);
   const [doctorSearch, setDoctorSearch]     = useState("");
+  const [doctorPage, setDoctorPage]         = useState(1);
+  const [doctorPages, setDoctorPages]       = useState(1);
   const [verifyingId, setVerifyingId]       = useState<string | null>(null);
 
-  const loadDoctors = useCallback(async (search?: string) => {
+  const loadDoctors = useCallback(async (search?: string, page = 1) => {
     setDoctorsLoading(true);
     try {
-      const { doctors: data } = await apiService.getAdminDoctors(search);
-      setDoctors(data);
+      const data = await apiService.getAdminDoctors({ search, page, limit: 20 });
+      setDoctors(data.doctors);
+      setDoctorPages(data.pages || 1);
     } catch (err: unknown) {
       toast({ title: "Failed to load doctors", description: err instanceof Error ? err.message : "", variant: "destructive" });
     } finally { setDoctorsLoading(false); }
   }, []);
 
-  useEffect(() => { if (tab === "doctors") loadDoctors(); }, [tab]);
+  useEffect(() => { if (tab === "doctors") loadDoctors(doctorSearch, doctorPage); }, [tab, doctorPage]);
 
   const handleVerify = (doctorId: string, isVerified: boolean) => {
     setPendingAction({ type: "verify", doctorId, isVerified });
@@ -273,34 +290,34 @@ export default function AdminDashboard() {
   ];
 
   return (
-    <div className="container py-8 space-y-6">
+    <div className="container py-10 space-y-7 max-w-7xl">
 
       {/* Header */}
-      <div className="flex items-center gap-4">
-        <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-primary to-indigo-600 flex items-center justify-center shadow-lg">
-          <ShieldCheck className="w-7 h-7 text-white" />
+      <div className="flex items-center gap-5">
+        <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-primary to-indigo-600 flex items-center justify-center shadow-lg ring-2 ring-primary/20">
+          <ShieldCheck className="w-8 h-8 text-white" />
         </div>
         <div>
-          <h1 className="text-2xl font-bold text-foreground">Admin Dashboard</h1>
-          <p className="text-sm text-muted-foreground">Platform management and monitoring</p>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">Admin Dashboard</h1>
+          <p className="text-base text-muted-foreground mt-0.5">Platform management and monitoring</p>
         </div>
       </div>
 
       {/* Tabs */}
-      <div className="flex rounded-lg bg-muted p-1 w-fit gap-0.5">
+      <div className="flex rounded-xl bg-muted/70 p-1.5 w-fit gap-1 border border-border/50">
         {TABS.map(({ key, label, badge }) => (
           <button
             key={key}
             onClick={() => setTab(key)}
-            className={`relative px-4 py-2 text-sm font-medium rounded-md transition-all ${
+            className={`relative px-5 py-2.5 text-sm font-semibold rounded-lg transition-all duration-200 ${
               tab === key
-                ? "bg-background shadow text-foreground"
-                : "text-muted-foreground hover:text-foreground"
+                ? "bg-background shadow-sm text-foreground border border-border/60"
+                : "text-muted-foreground hover:text-foreground hover:bg-muted"
             }`}
           >
             {label}
             {badge ? (
-              <span className="ml-1.5 inline-flex items-center justify-center w-4 h-4 text-[10px] font-bold rounded-full bg-yellow-500 text-white">
+              <span className="ml-2 inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 text-[10px] font-bold rounded-full bg-yellow-500 text-white shadow-sm">
                 {badge}
               </span>
             ) : null}
@@ -317,21 +334,24 @@ export default function AdminDashboard() {
             <>
               {/* Primary KPIs */}
               <div>
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-3">Platform Overview</p>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4">Platform Overview</p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   {[
-                    { label: "Total Users",        value: stats?.totalUsers,          icon: Users,         color: "text-blue-500",    iconBg: "bg-blue-500/10",    border: "border-l-blue-500",    desc: "Patients & doctors" },
-                    { label: "DR Screenings",      value: stats?.totalReports,        icon: FileText,      color: "text-indigo-500",  iconBg: "bg-indigo-500/10",  border: "border-l-indigo-500",  desc: "Total retinal reports" },
-                    { label: "Active Doctors",     value: stats?.totalDoctors,        icon: Stethoscope,   color: "text-green-500",   iconBg: "bg-green-500/10",   border: "border-l-green-500",   desc: "Verified specialists" },
-                    { label: "Pending Approval",   value: stats?.pendingDoctors,      icon: Clock,         color: "text-yellow-500",  iconBg: "bg-yellow-500/10",  border: "border-l-yellow-500",  desc: "Awaiting verification" },
-                  ].map(({ label, value, icon: Icon, color, iconBg, border, desc }) => (
-                    <Card key={label} className={`p-6 hover:shadow-lg transition-shadow duration-200 border-l-4 ${border}`}>
-                      <div className="flex items-start justify-between mb-3">
-                        <div className={`p-3 ${iconBg} rounded-xl`}><Icon className={`w-6 h-6 ${color}`} /></div>
-                        <span className="text-3xl font-bold text-foreground">{value ?? "—"}</span>
+                    { label: "Total Users",        value: stats?.totalUsers,          icon: Users,         color: "text-blue-500",    iconBg: "bg-blue-500/10",    ring: "ring-blue-500/20",    accent: "from-blue-500 to-blue-600",    desc: "Patients & doctors" },
+                    { label: "DR Screenings",      value: stats?.totalReports,        icon: FileText,      color: "text-indigo-500",  iconBg: "bg-indigo-500/10",  ring: "ring-indigo-500/20",  accent: "from-indigo-500 to-indigo-600",  desc: "Total retinal reports" },
+                    { label: "Active Doctors",     value: stats?.totalDoctors,        icon: Stethoscope,   color: "text-green-500",   iconBg: "bg-green-500/10",   ring: "ring-green-500/20",   accent: "from-green-500 to-emerald-500",   desc: "Verified specialists" },
+                    { label: "Pending Approval",   value: stats?.pendingDoctors,      icon: Clock,         color: "text-yellow-500",  iconBg: "bg-yellow-500/10",  ring: "ring-yellow-500/20",  accent: "from-yellow-500 to-amber-500",  desc: "Awaiting verification" },
+                  ].map(({ label, value, icon: Icon, color, iconBg, ring, accent, desc }) => (
+                    <Card key={label} className="p-6 hover:shadow-lg transition-all duration-200 border border-border/60 rounded-2xl relative overflow-hidden group">
+                      <div className={`absolute top-0 left-0 w-1 h-full bg-gradient-to-b ${accent} rounded-l-2xl`} />
+                      <div className="flex items-start justify-between mb-4 pl-2">
+                        <div className={`p-3 ${iconBg} rounded-xl ring-1 ${ring}`}><Icon className={`w-6 h-6 ${color}`} /></div>
+                        <span className="text-3xl font-bold tabular-nums text-foreground">{value ?? "—"}</span>
                       </div>
-                      <h3 className="font-semibold text-foreground mb-1">{label}</h3>
-                      <p className="text-xs text-muted-foreground">{desc}</p>
+                      <div className="pl-2">
+                        <h3 className="font-semibold text-foreground mb-0.5">{label}</h3>
+                        <p className="text-xs text-muted-foreground">{desc}</p>
+                      </div>
                     </Card>
                   ))}
                 </div>
@@ -339,21 +359,24 @@ export default function AdminDashboard() {
 
               {/* Secondary KPIs */}
               <div>
-                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-3">Activity & Health</p>
+                <p className="text-xs font-semibold text-muted-foreground uppercase tracking-widest mb-4">Activity & Health</p>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                   {[
-                    { label: "Appointments",       value: stats?.totalAppointments,   icon: CalendarCheck, color: "text-cyan-500",    iconBg: "bg-cyan-500/10",    border: "border-l-cyan-500",    desc: "All-time bookings" },
-                    { label: "Consultations",      value: stats?.totalConsultations,  icon: Activity,      color: "text-violet-500",  iconBg: "bg-violet-500/10",  border: "border-l-violet-500",  desc: "Doctor reviews requested" },
-                    { label: "High-Risk Patients", value: stats?.highRiskPatients,    icon: Heart,         color: "text-red-500",     iconBg: "bg-red-500/10",     border: "border-l-red-500",     desc: "Stage ≥ 3 detected" },
-                    { label: "New This Month",     value: stats?.newUsersThisMonth,   icon: TrendingUp,    color: "text-emerald-500", iconBg: "bg-emerald-500/10", border: "border-l-emerald-500", desc: "New registrations" },
-                  ].map(({ label, value, icon: Icon, color, iconBg, border, desc }) => (
-                    <Card key={label} className={`p-6 hover:shadow-lg transition-shadow duration-200 border-l-4 ${border}`}>
-                      <div className="flex items-start justify-between mb-3">
-                        <div className={`p-3 ${iconBg} rounded-xl`}><Icon className={`w-6 h-6 ${color}`} /></div>
-                        <span className="text-3xl font-bold text-foreground">{value ?? "—"}</span>
+                    { label: "Appointments",       value: stats?.totalAppointments,   icon: CalendarCheck, color: "text-cyan-500",    iconBg: "bg-cyan-500/10",    ring: "ring-cyan-500/20",    accent: "from-cyan-500 to-cyan-600",    desc: "All-time bookings" },
+                    { label: "Consultations",      value: stats?.totalConsultations,  icon: Activity,      color: "text-violet-500",  iconBg: "bg-violet-500/10",  ring: "ring-violet-500/20",  accent: "from-violet-500 to-purple-500",  desc: "Doctor reviews requested" },
+                    { label: "High-Risk Patients", value: stats?.highRiskPatients,    icon: Heart,         color: "text-red-500",     iconBg: "bg-red-500/10",     ring: "ring-red-500/20",     accent: "from-red-500 to-rose-500",     desc: "Stage ≥ 3 detected" },
+                    { label: "New This Month",     value: stats?.newUsersThisMonth,   icon: TrendingUp,    color: "text-emerald-500", iconBg: "bg-emerald-500/10", ring: "ring-emerald-500/20", accent: "from-emerald-500 to-green-500", desc: "New registrations" },
+                  ].map(({ label, value, icon: Icon, color, iconBg, ring, accent, desc }) => (
+                    <Card key={label} className="p-6 hover:shadow-lg transition-all duration-200 border border-border/60 rounded-2xl relative overflow-hidden group">
+                      <div className={`absolute top-0 left-0 w-1 h-full bg-gradient-to-b ${accent} rounded-l-2xl`} />
+                      <div className="flex items-start justify-between mb-4 pl-2">
+                        <div className={`p-3 ${iconBg} rounded-xl ring-1 ${ring}`}><Icon className={`w-6 h-6 ${color}`} /></div>
+                        <span className="text-3xl font-bold tabular-nums text-foreground">{value ?? "—"}</span>
                       </div>
-                      <h3 className="font-semibold text-foreground mb-1">{label}</h3>
-                      <p className="text-xs text-muted-foreground">{desc}</p>
+                      <div className="pl-2">
+                        <h3 className="font-semibold text-foreground mb-0.5">{label}</h3>
+                        <p className="text-xs text-muted-foreground">{desc}</p>
+                      </div>
                     </Card>
                   ))}
                 </div>
@@ -480,7 +503,7 @@ export default function AdminDashboard() {
       {/* ── Doctors ── */}
       {tab === "doctors" && (
         <div className="space-y-4">
-          <div className="flex gap-3">
+          <div className="flex gap-3 flex-wrap">
             <div className="relative flex-1 max-w-sm">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
@@ -488,11 +511,29 @@ export default function AdminDashboard() {
                 placeholder="Search by specialization or license…"
                 value={doctorSearch}
                 onChange={e => setDoctorSearch(e.target.value)}
-                onKeyDown={e => { if (e.key === "Enter") loadDoctors(doctorSearch); }}
+                onKeyDown={e => { if (e.key === "Enter") { setDoctorPage(1); loadDoctors(doctorSearch, 1); } }}
               />
             </div>
-            <Button variant="outline" onClick={() => loadDoctors(doctorSearch)}>Search</Button>
-            <Button variant="ghost" onClick={() => { setDoctorSearch(""); loadDoctors(); }}>Clear</Button>
+            <Button variant="outline" onClick={() => { setDoctorPage(1); loadDoctors(doctorSearch, 1); }}>Search</Button>
+            <Button variant="ghost" onClick={() => { setDoctorSearch(""); setDoctorPage(1); loadDoctors(undefined, 1); }}>Clear</Button>
+            <Button
+              variant="outline"
+              className="gap-1.5 ml-auto"
+              disabled={doctors.length === 0}
+              onClick={() => exportCSV(doctors, "meddycare_doctors.csv", [
+                { key: "user.firstName", label: "First Name" },
+                { key: "user.lastName",  label: "Last Name" },
+                { key: "user.email",     label: "Email" },
+                { key: "specialization", label: "Specialization" },
+                { key: "experience",     label: "Experience (yrs)" },
+                { key: "licenseNumber",  label: "License" },
+                { key: "isVerified",     label: "Verified" },
+                { key: "rating.average", label: "Rating" },
+                { key: "rating.count",   label: "Reviews" },
+              ])}
+            >
+              <Download className="w-4 h-4" /> Export CSV
+            </Button>
           </div>
 
           {doctorsLoading ? (
@@ -552,6 +593,7 @@ export default function AdminDashboard() {
               ))}
             </div>
           )}
+          <Pagination page={doctorPage} pages={doctorPages} onChange={setDoctorPage} />
         </div>
       )}
 
@@ -579,6 +621,21 @@ export default function AdminDashboard() {
               </SelectContent>
             </Select>
             <Button variant="outline" onClick={() => { setUserPage(1); loadUsers(1, userSearch, userRole); }}>Search</Button>
+            <Button
+              variant="outline"
+              className="gap-1.5"
+              disabled={users.length === 0}
+              onClick={() => exportCSV(users, "meddycare_users.csv", [
+                { key: "firstName",  label: "First Name" },
+                { key: "lastName",   label: "Last Name" },
+                { key: "email",      label: "Email" },
+                { key: "role",       label: "Role" },
+                { key: "createdAt",  label: "Joined" },
+                { key: "isSuspended", label: "Suspended" },
+              ])}
+            >
+              <Download className="w-4 h-4" /> Export CSV
+            </Button>
             <Button onClick={() => setCreateAdminOpen(true)} className="ml-auto gap-1.5">
               <UserPlus className="w-4 h-4" /> Create Admin
             </Button>

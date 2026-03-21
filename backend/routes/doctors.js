@@ -2,7 +2,9 @@ import express from 'express';
 import { body, validationResult } from 'express-validator';
 import Doctor from '../models/Doctor.js';
 import User from '../models/User.js';
+import Consultation from '../models/Consultation.js';
 import { auth, doctorAuth } from '../middleware/auth.js';
+import { doctorListCache } from '../cache.js';
 
 const router = express.Router();
 
@@ -91,6 +93,80 @@ router.get('/nearby', async (req, res) => {
   }
 });
 
+// @route   GET /api/doctors/analytics
+// @desc    Doctor's own performance analytics
+// @access  Private (Doctor)
+router.get('/analytics', doctorAuth, async (req, res) => {
+  try {
+    const doctor = await Doctor.findOne({ user: req.user._id });
+    if (!doctor) return res.status(404).json({ error: 'Doctor profile not found' });
+
+    const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+    const [
+      totalConsultations,
+      statusCounts,
+      consultationsOverTime,
+      ratingBreakdown,
+    ] = await Promise.all([
+      Consultation.countDocuments({ doctor: doctor._id }),
+      Consultation.aggregate([
+        { $match: { doctor: doctor._id } },
+        { $group: { _id: '$status', count: { $sum: 1 } } },
+      ]),
+      // Daily count over last 30 days
+      Consultation.aggregate([
+        { $match: { doctor: doctor._id, createdAt: { $gte: thirtyDaysAgo } } },
+        { $group: {
+            _id: { $dateToString: { format: '%Y-%m-%d', date: '$createdAt' } },
+            count: { $sum: 1 },
+        }},
+        { $sort: { _id: 1 } },
+      ]),
+      // Patient risk distribution from linked reports
+      Consultation.aggregate([
+        { $match: { doctor: doctor._id } },
+        { $lookup: { from: 'reports', localField: 'report', foreignField: '_id', as: 'reportDoc' } },
+        { $unwind: { path: '$reportDoc', preserveNullAndEmptyArrays: false } },
+        { $group: { _id: '$reportDoc.stage', count: { $sum: 1 } } },
+        { $sort: { _id: 1 } },
+      ]),
+    ]);
+
+    // Build status map
+    const statusMap = { total: totalConsultations, pending: 0, in_review: 0, completed: 0, cancelled: 0 };
+    for (const s of statusCounts) { if (s._id in statusMap) statusMap[s._id] = s.count; }
+
+    // Rating distribution
+    const ratingDist = [1, 2, 3, 4, 5].map(star => ({
+      star,
+      count: doctor.reviews.filter(r => r.rating === star).length,
+    }));
+
+    // Stage labels for patient risk
+    const stageLabels = ['No DR', 'Mild', 'Moderate', 'Severe', 'Proliferative'];
+    const patientRiskTiers = ratingBreakdown.map(r => ({
+      stage: r._id,
+      label: stageLabels[r._id] ?? `Stage ${r._id}`,
+      count: r.count,
+    }));
+
+    res.json({
+      consultations: statusMap,
+      consultationsOverTime: consultationsOverTime.map(d => ({ date: d._id, count: d.count })),
+      rating: {
+        average: doctor.rating.average,
+        count:   doctor.rating.count,
+        distribution: ratingDist,
+      },
+      patientRiskTiers,
+    });
+  } catch (err) {
+    console.error('Doctor analytics error:', err);
+    res.status(500).json({ error: 'Server error' });
+  }
+});
+
 // @route   GET /api/doctors/me
 // @desc    Get current doctor's own profile
 // @access  Private (Doctor)
@@ -108,6 +184,53 @@ router.get('/me', auth, async (req, res) => {
   } catch (error) {
     console.error('Get own doctor profile error:', error);
     res.status(500).json({ error: 'Server error while getting doctor profile' });
+  }
+});
+
+// @route   GET /api/doctors/:id/slots
+// @desc    Get available time slots for a doctor on a given date
+// @access  Public
+router.get('/:id/slots', async (req, res) => {
+  try {
+    const { date } = req.query;
+    if (!date) return res.status(400).json({ error: 'date query parameter required (YYYY-MM-DD)' });
+
+    const doctor = await Doctor.findById(req.params.id);
+    if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
+
+    const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
+    const dayName = DAY_NAMES[new Date(date).getDay()];
+    const avail = doctor.availability?.[dayName];
+
+    if (!avail || !avail.available) {
+      return res.json({ slots: [], available: false });
+    }
+
+    const slots = [];
+    const [startH, startM] = (avail.start || '09:00').split(':').map(Number);
+    const [endH, endM] = (avail.end || '17:00').split(':').map(Number);
+    let current = startH * 60 + startM;
+    const end = endH * 60 + endM;
+
+    // For today's date, filter out slots that are already in the past
+    const now = new Date();
+    const today = now.toISOString().slice(0, 10);
+    const isToday = date === today;
+    const nowMinutes = isToday ? now.getHours() * 60 + now.getMinutes() : -1;
+
+    while (current < end) {
+      if (current > nowMinutes) {
+        const h = Math.floor(current / 60);
+        const m = current % 60;
+        slots.push(`${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`);
+      }
+      current += 30;
+    }
+
+    res.json({ slots, available: true, start: avail.start, end: avail.end });
+  } catch (error) {
+    console.error('Get doctor slots error:', error);
+    res.status(500).json({ error: 'Server error while getting doctor slots' });
   }
 });
 
@@ -154,13 +277,21 @@ router.post('/', [
       return res.status(400).json({ error: 'Doctor profile already exists for this user' });
     }
 
+    // Whitelist allowed fields — prevent mass-assignment of isVerified, rating, reviews, etc.
+    const { specialization, licenseNumber, experience, contact, location, availability } = req.body;
     const doctorData = {
       user: req.user._id,
-      ...req.body
+      specialization,
+      licenseNumber,
+      experience,
+      ...(contact && { contact }),
+      ...(location && { location }),
+      ...(availability && { availability }),
     };
 
     const doctor = new Doctor(doctorData);
     await doctor.save();
+    doctorListCache.clear(); // New doctor — invalidate cached listings
 
     // Update user role to doctor
     await User.findByIdAndUpdate(req.user._id, { role: 'doctor' });
@@ -178,7 +309,7 @@ router.post('/', [
 // @route   PUT /api/doctors/:id
 // @desc    Update doctor profile
 // @access  Private (Doctor only)
-router.put('/:id', [auth, doctorAuth], async (req, res) => {
+router.put('/:id', doctorAuth, async (req, res) => {
   try {
     const doctor = await Doctor.findById(req.params.id);
     
@@ -214,6 +345,7 @@ router.put('/:id', [auth, doctorAuth], async (req, res) => {
       { $set: allowed },
       { new: true, runValidators: true }
     ).populate('user', 'firstName lastName email profileImage');
+    doctorListCache.clear(); // Profile changed — invalidate cached listings
 
     res.json({
       message: 'Doctor profile updated successfully',
@@ -266,6 +398,7 @@ router.post('/:id/reviews', [
     doctor.rating.count = doctor.reviews.length;
 
     await doctor.save();
+    doctorListCache.clear(); // Rating changed — invalidate cached listings
 
     res.status(201).json({
       message: 'Review added successfully',
@@ -283,7 +416,12 @@ router.post('/:id/reviews', [
 router.get('/', async (req, res) => {
   try {
     const { specialization, city, rating, limit = 20, page = 1 } = req.query;
-    
+
+    // Build a stable cache key from query params
+    const cacheKey = `docs:${specialization || ''}:${city || ''}:${rating || ''}:${limit}:${page}`;
+    const cached = doctorListCache.get(cacheKey);
+    if (cached) return res.json(cached);
+
     let query = { isActive: true, isVerified: true };
 
     if (specialization) {
@@ -291,7 +429,8 @@ router.get('/', async (req, res) => {
     }
 
     if (city) {
-      query['location.address.city'] = { $regex: city, $options: 'i' };
+      const escapedCity = city.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      query['location.address.city'] = { $regex: escapedCity, $options: 'i' };
     }
 
     if (rating) {
@@ -299,16 +438,17 @@ router.get('/', async (req, res) => {
     }
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
-    
-    const doctors = await Doctor.find(query)
-      .populate('user', 'firstName lastName email profileImage')
-      .skip(skip)
-      .limit(parseInt(limit))
-      .sort({ 'rating.average': -1, 'rating.count': -1 });
 
-    const total = await Doctor.countDocuments(query);
+    const [doctors, total] = await Promise.all([
+      Doctor.find(query)
+        .populate('user', 'firstName lastName email profileImage')
+        .skip(skip)
+        .limit(parseInt(limit))
+        .sort({ 'rating.average': -1, 'rating.count': -1 }),
+      Doctor.countDocuments(query),
+    ]);
 
-    res.json({
+    const result = {
       doctors,
       pagination: {
         current: parseInt(page),
@@ -316,7 +456,9 @@ router.get('/', async (req, res) => {
         hasNext: skip + doctors.length < total,
         hasPrev: parseInt(page) > 1
       }
-    });
+    };
+    doctorListCache.set(cacheKey, result);
+    res.json(result);
   } catch (error) {
     console.error('Get doctors error:', error);
     res.status(500).json({ error: 'Server error while getting doctors' });

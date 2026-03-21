@@ -54,13 +54,13 @@ const doctorSchema = new mongoose.Schema({
     website: String
   },
   availability: {
-    monday: { start: String, end: String, available: { type: Boolean, default: true } },
-    tuesday: { start: String, end: String, available: { type: Boolean, default: true } },
-    wednesday: { start: String, end: String, available: { type: Boolean, default: true } },
-    thursday: { start: String, end: String, available: { type: Boolean, default: true } },
-    friday: { start: String, end: String, available: { type: Boolean, default: true } },
-    saturday: { start: String, end: String, available: { type: Boolean, default: false } },
-    sunday: { start: String, end: String, available: { type: Boolean, default: false } }
+    monday: { start: { type: String, default: '09:00' }, end: { type: String, default: '17:00' }, available: { type: Boolean, default: true } },
+    tuesday: { start: { type: String, default: '09:00' }, end: { type: String, default: '17:00' }, available: { type: Boolean, default: true } },
+    wednesday: { start: { type: String, default: '09:00' }, end: { type: String, default: '17:00' }, available: { type: Boolean, default: true } },
+    thursday: { start: { type: String, default: '09:00' }, end: { type: String, default: '17:00' }, available: { type: Boolean, default: true } },
+    friday: { start: { type: String, default: '09:00' }, end: { type: String, default: '17:00' }, available: { type: Boolean, default: true } },
+    saturday: { start: { type: String, default: '09:00' }, end: { type: String, default: '17:00' }, available: { type: Boolean, default: false } },
+    sunday: { start: { type: String, default: '09:00' }, end: { type: String, default: '17:00' }, available: { type: Boolean, default: false } }
   },
   services: [{
     name: String,

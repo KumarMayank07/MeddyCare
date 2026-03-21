@@ -6,8 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from "@/components/ui/dialog";
-import { Star, MapPin, Phone, Mail, Globe, Loader2, Navigation, Building2 } from "lucide-react";
+import { Star, MapPin, Phone, Mail, Globe, Loader2, Navigation, Building2, ChevronLeft, ChevronRight } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
+import { useAuth } from "@/contexts/AuthContext";
 import apiService from "@/lib/api";
 import type { ClinicPin } from "@/components/DoctorMap";
 
@@ -95,11 +96,20 @@ async function fetchNearbyClinics(lat: number, lng: number, radiusKm: number): P
 
 export default function Doctors() {
   const { toast } = useToast();
+  const { user } = useAuth();
+
+  // Current user id — used to detect already-reviewed doctors
+  const currentUserId = user?._id ?? "";
 
   // App doctors
   const [doctors, setDoctors] = useState<Doctor[]>([]);
   const [loadingDoctors, setLoadingDoctors] = useState(true);
   const [specFilter, setSpecFilter] = useState("All");
+  const [page, setPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const DOCTORS_PER_PAGE = 12;
+  // Track doctorIds the current user has already reviewed (optimistic + from data)
+  const [reviewedIds, setReviewedIds] = useState<Set<string>>(new Set());
 
   // Nearby clinics (Overpass)
   const [clinics, setClinics] = useState<ClinicPin[]>([]);
@@ -110,8 +120,12 @@ export default function Doctors() {
 
   // Booking modal
   const [bookingDoctor, setBookingDoctor] = useState<Doctor | null>(null);
-  const [bookingForm, setBookingForm] = useState({ date: "", reason: "", notes: "" });
+  const [bookingForm, setBookingForm] = useState({ reason: "", notes: "" });
   const [bookingLoading, setBookingLoading] = useState(false);
+  const [bookingDate, setBookingDate] = useState("");
+  const [slots, setSlots] = useState<string[]>([]);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [selectedSlot, setSelectedSlot] = useState("");
 
   // Rating modal
   const [ratingDoctor, setRatingDoctor] = useState<Doctor | null>(null);
@@ -119,19 +133,62 @@ export default function Doctors() {
   const [ratingComment, setRatingComment] = useState("");
   const [ratingLoading, setRatingLoading] = useState(false);
 
-  // Load app doctors on mount
+  // Reset slot state when opening a new booking modal
   useEffect(() => {
-    loadAppDoctors();
+    if (bookingDoctor) {
+      setBookingDate("");
+      setSlots([]);
+      setSelectedSlot("");
+    }
+  }, [bookingDoctor]);
+
+  // Fetch available slots when date changes
+  useEffect(() => {
+    if (!bookingDate || !bookingDoctor) return;
+    setSlotsLoading(true);
+    apiService.getDoctorSlots(bookingDoctor._id, bookingDate)
+      .then(({ slots: s }) => setSlots(s))
+      .catch(() => setSlots([]))
+      .finally(() => setSlotsLoading(false));
+  }, [bookingDate, bookingDoctor]);
+
+  // Load app doctors on mount and when page/filter changes
+  useEffect(() => {
+    loadAppDoctors(page);
+  }, [page, specFilter]);
+
+  useEffect(() => {
     tryGeolocation();
   }, []);
 
-  const loadAppDoctors = async () => {
+  const loadAppDoctors = async (p = page) => {
     setLoadingDoctors(true);
     try {
-      const res = await apiService.getAllDoctors({ limit: 50 });
-      const list = Array.isArray(res) ? res : res?.doctors ?? [];
-      list.sort((a: Doctor, b: Doctor) => (b.rating?.average ?? 0) - (a.rating?.average ?? 0));
+      const filters: Record<string, any> = { limit: DOCTORS_PER_PAGE, page: p };
+      if (specFilter !== "All") filters.specialization = specFilter;
+      const res = await apiService.getAllDoctors(filters);
+      const list: Doctor[] = res?.doctors ?? [];
       setDoctors(list);
+      setTotalPages(res?.pagination?.total ?? 1);
+      // Seed reviewedIds from server data — any doctor whose reviews[] contains currentUserId
+      if (currentUserId) {
+        const alreadyReviewed = new Set<string>(
+          list
+            .filter((d: any) =>
+              Array.isArray(d.reviews) &&
+              d.reviews.some((r: any) => {
+                const uid = r.user?._id ?? r.user;
+                return uid?.toString() === currentUserId;
+              })
+            )
+            .map((d) => d._id)
+        );
+        setReviewedIds((prev) => {
+          const merged = new Set(prev);
+          alreadyReviewed.forEach((id) => merged.add(id));
+          return merged;
+        });
+      }
     } catch {
       toast({ title: "Could not load doctors", variant: "destructive" });
     } finally {
@@ -190,21 +247,24 @@ export default function Doctors() {
   };
 
   const handleBookAppointment = async () => {
-    if (!bookingDoctor || !bookingForm.date || !bookingForm.reason) {
+    if (!bookingDoctor || !bookingDate || !selectedSlot || !bookingForm.reason) {
       toast({ title: "Fill all required fields", variant: "destructive" });
       return;
     }
+    if (bookingLoading) return; // sync guard against double-click
     setBookingLoading(true);
     try {
+      // Combine date + selected slot time into a full ISO datetime
+      const dateTime = `${bookingDate}T${selectedSlot}`;
       await apiService.bookAppointment({
         doctorId: bookingDoctor._id,
-        date: bookingForm.date,
+        date: dateTime,
         reason: bookingForm.reason,
         notes: bookingForm.notes || undefined,
       });
       toast({ title: "Appointment booked!", description: `With Dr. ${bookingDoctor.user.firstName} ${bookingDoctor.user.lastName}` });
       setBookingDoctor(null);
-      setBookingForm({ date: "", reason: "", notes: "" });
+      setBookingForm({ reason: "", notes: "" });
     } catch (err: unknown) {
       toast({ title: "Booking failed", description: err instanceof Error ? err.message : "Try again", variant: "destructive" });
     } finally {
@@ -219,8 +279,9 @@ export default function Doctors() {
     }
     setRatingLoading(true);
     try {
-      await apiService.addReview(ratingDoctor._id, { rating: ratingValue, comment: ratingComment || undefined });
+      await apiService.addDoctorReview(ratingDoctor._id, { rating: ratingValue, comment: ratingComment || undefined });
       toast({ title: "Review submitted!", description: `You rated Dr. ${ratingDoctor.user.firstName} ${ratingValue} star${ratingValue > 1 ? "s" : ""}.` });
+      setReviewedIds((prev) => new Set(prev).add(ratingDoctor._id));
       setRatingDoctor(null);
       setRatingValue(0);
       setRatingComment("");
@@ -232,14 +293,10 @@ export default function Doctors() {
     }
   };
 
-  const filteredDoctors = specFilter === "All"
-    ? doctors
-    : doctors.filter((d) => d.specialization === specFilter);
-
   const mapCenter: [number, number] = userLocation ?? [20.5937, 78.9629];
 
   // Enrich each doctor with a computed distance (client-side haversine) when we have user location
-  const enrichedDoctors = filteredDoctors.map((d) => {
+  const enrichedDoctors = doctors.map((d) => {
     const pos = doctorLatLng(d);
     const distance = (pos && userLocation)
       ? haversineKm(userLocation[0], userLocation[1], pos[0], pos[1])
@@ -275,13 +332,13 @@ export default function Doctors() {
             <Star className="h-5 w-5 text-yellow-500 fill-yellow-500" />
             MeddyCare Doctors
             {!loadingDoctors && (
-              <Badge variant="secondary">{filteredDoctors.length}</Badge>
+              <Badge variant="secondary">{doctors.length}</Badge>
             )}
           </h2>
 
           {/* Specialization filter */}
           <div className="w-52">
-            <Select value={specFilter} onValueChange={setSpecFilter}>
+            <Select value={specFilter} onValueChange={(v) => { setPage(1); setSpecFilter(v); }}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
                 {SPECIALIZATIONS.map((s) => (
@@ -296,7 +353,7 @@ export default function Doctors() {
           <div className="flex justify-center py-12">
             <Loader2 className="h-8 w-8 animate-spin text-primary" />
           </div>
-        ) : filteredDoctors.length === 0 ? (
+        ) : doctors.length === 0 ? (
           <Card className="p-8 text-center border-dashed">
             <p className="text-muted-foreground">No doctors found for this specialization.</p>
           </Card>
@@ -390,13 +447,44 @@ export default function Doctors() {
                     <Button className="flex-1" onClick={() => setBookingDoctor(doctor)}>
                       Book Appointment
                     </Button>
-                    <Button variant="outline" className="gap-1.5 px-3" onClick={() => { setRatingDoctor(doctor); setRatingValue(0); setRatingComment(""); }}>
-                      <Star className="w-3.5 h-3.5" /> Rate
-                    </Button>
+                    {reviewedIds.has(doctor._id) ? (
+                      <div className="flex items-center gap-1.5 px-3 text-sm text-yellow-500 font-medium">
+                        <Star className="w-3.5 h-3.5 fill-yellow-500" /> Rated
+                      </div>
+                    ) : (
+                      <Button variant="outline" className="gap-1.5 px-3" onClick={() => { setRatingDoctor(doctor); setRatingValue(0); setRatingComment(""); }}>
+                        <Star className="w-3.5 h-3.5" /> Rate
+                      </Button>
+                    )}
                   </div>
                 </CardContent>
               </Card>
             ))}
+          </div>
+        )}
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div className="flex items-center justify-center gap-3 pt-2">
+            <Button
+              size="icon"
+              variant="outline"
+              disabled={page <= 1 || loadingDoctors}
+              onClick={() => setPage((p) => p - 1)}
+            >
+              <ChevronLeft className="w-4 h-4" />
+            </Button>
+            <span className="text-sm text-muted-foreground">
+              Page {page} of {totalPages}
+            </span>
+            <Button
+              size="icon"
+              variant="outline"
+              disabled={page >= totalPages || loadingDoctors}
+              onClick={() => setPage((p) => p + 1)}
+            >
+              <ChevronRight className="w-4 h-4" />
+            </Button>
           </div>
         )}
       </section>
@@ -587,15 +675,45 @@ export default function Doctors() {
           </DialogHeader>
           <div className="space-y-4 py-2">
             <div className="space-y-1.5">
-              <Label htmlFor="appt-date">Date &amp; Time <span className="text-destructive">*</span></Label>
+              <Label htmlFor="appt-date">Date <span className="text-destructive">*</span></Label>
               <Input
                 id="appt-date"
-                type="datetime-local"
-                min={new Date().toISOString().slice(0, 16)}
-                value={bookingForm.date}
-                onChange={(e) => setBookingForm({ ...bookingForm, date: e.target.value })}
+                type="date"
+                min={new Date().toISOString().slice(0, 10)}
+                value={bookingDate}
+                onChange={(e) => { setBookingDate(e.target.value); setSelectedSlot(""); }}
                 disabled={bookingLoading}
               />
+            </div>
+            <div className="space-y-1.5">
+              <Label>Time Slot <span className="text-destructive">*</span></Label>
+              {!bookingDate ? (
+                <p className="text-sm text-muted-foreground">Select a date first to see available slots.</p>
+              ) : slotsLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Loading slots...
+                </div>
+              ) : slots.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No available slots on this date. Try another day.</p>
+              ) : (
+                <div className="grid grid-cols-4 gap-2">
+                  {slots.map((slot) => (
+                    <button
+                      key={slot}
+                      type="button"
+                      onClick={() => setSelectedSlot(slot)}
+                      disabled={bookingLoading}
+                      className={`px-2 py-2 rounded-lg text-sm font-medium border transition-all ${
+                        selectedSlot === slot
+                          ? "bg-primary text-primary-foreground border-primary shadow-sm"
+                          : "bg-background border-border hover:border-primary/50 hover:bg-primary/5"
+                      }`}
+                    >
+                      {slot}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="appt-reason">Reason <span className="text-destructive">*</span></Label>
@@ -622,7 +740,7 @@ export default function Doctors() {
             <Button variant="outline" onClick={() => setBookingDoctor(null)} disabled={bookingLoading}>
               Cancel
             </Button>
-            <Button onClick={handleBookAppointment} disabled={bookingLoading}>
+            <Button onClick={handleBookAppointment} disabled={bookingLoading || !selectedSlot || !bookingDate}>
               {bookingLoading ? <><Loader2 className="h-4 w-4 animate-spin mr-1" />Booking...</> : "Confirm Booking"}
             </Button>
           </DialogFooter>

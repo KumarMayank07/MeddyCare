@@ -91,7 +91,6 @@ export function setupSocket(io) {
   });
 
   io.on('connection', (socket) => {
-    console.log(`Socket connected: ${socket.id} (user: ${socket.user._id})`);
 
     // Join a personal room so we can push targeted events (new_consultation, appointment_updated, etc.)
     socket.join(`user:${socket.user._id}`);
@@ -111,10 +110,6 @@ export function setupSocket(io) {
         }
 
         socket.join(roomName(consultationId));
-        socket.consultationRooms = socket.consultationRooms || new Set();
-        socket.consultationRooms.add(consultationId);
-
-        console.log(`User ${socket.user._id} (${role}) joined room ${roomName(consultationId)}`);
       } catch (err) {
         console.error('join_consultation error:', err);
         socket.emit('error', { message: 'Failed to join consultation' });
@@ -124,7 +119,6 @@ export function setupSocket(io) {
     // ── leave_consultation ─────────────────────────────────────────────────
     socket.on('leave_consultation', ({ consultationId }) => {
       socket.leave(roomName(consultationId));
-      socket.consultationRooms?.delete(consultationId);
     });
 
     // ── send_message ───────────────────────────────────────────────────────
@@ -180,7 +174,9 @@ export function setupSocket(io) {
         }
 
         // Verify consultation is open
-        const consultation = await Consultation.findById(consultationId).select('status');
+        const consultation = await Consultation.findById(consultationId)
+          .select('status patient doctor')
+          .populate('doctor', 'user');
         if (!consultation) {
           socket.emit('error', { message: 'Consultation not found' });
           return;
@@ -202,9 +198,13 @@ export function setupSocket(io) {
           timestamp:  new Date(),
         });
 
-        // Broadcast to everyone in the room (including sender for confirmation)
-        io.to(roomName(consultationId)).emit('message_received', {
+        const senderName = senderRole === 'doctor'
+          ? `Dr. ${socket.user.firstName} ${socket.user.lastName}`.trim()
+          : `${socket.user.firstName} ${socket.user.lastName}`.trim();
+
+        const msgPayload = {
           consultationId,
+          senderName,
           message: {
             _id:        saved._id,
             senderId:   socket.user._id,
@@ -215,7 +215,20 @@ export function setupSocket(io) {
             readBy:     saved.readBy,
             timestamp:  saved.timestamp,
           },
-        });
+        };
+
+        // Broadcast to everyone in the room (including sender for confirmation)
+        io.to(roomName(consultationId)).emit('message_received', msgPayload);
+
+        // Push a separate notification event to the recipient's personal room.
+        // Using a distinct event ('message_notification') avoids duplicate firing
+        // for users who are already in the consultation room and receive 'message_received' above.
+        const recipientUserId = senderRole === 'doctor'
+          ? consultation.patient?.toString()
+          : consultation.doctor?.user?.toString();
+        if (recipientUserId) {
+          io.to(`user:${recipientUserId}`).emit('message_notification', msgPayload);
+        }
 
       } catch (err) {
         console.error('send_message error:', err);
@@ -259,7 +272,7 @@ export function setupSocket(io) {
             'readBy.user':  { $ne: socket.user._id },
           },
           {
-            $push: { readBy: { user: socket.user._id, readAt: new Date() } },
+            $addToSet: { readBy: { user: socket.user._id, readAt: new Date() } },
           }
         );
 
@@ -276,7 +289,6 @@ export function setupSocket(io) {
     // ── disconnect ─────────────────────────────────────────────────────────
     socket.on('disconnect', () => {
       rateLimits.delete(socket.id);
-      console.log(`Socket disconnected: ${socket.id}`);
     });
   });
 }
@@ -290,9 +302,9 @@ export function setIo(io) {
   _io = io;
 }
 
-export function emitConsultationUpdated(consultationId, status) {
+export function emitConsultationUpdated(consultationId, status, extra = {}) {
   if (_io) {
-    _io.to(roomName(consultationId)).emit('consultation_updated', { consultationId, status });
+    _io.to(roomName(consultationId)).emit('consultation_updated', { consultationId, status, ...extra });
   }
 }
 

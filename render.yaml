@@ -52,9 +52,19 @@ services:
         sync: false
       - key: GOOGLE_GENAI_API_KEY
         sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: QDRANT_HOST
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: QDRANT_COLLECTION
+        value: meddycare_chunks
       - key: JWT_SECRET_KEY
         sync: false
       - key: ALLOWED_ORIGINS
+        sync: false
+      - key: ALLOWED_ORIGIN_REGEX
         sync: false
     autoDeploy: true
     serviceIdleTimeoutMinutes: 15

@@ -8,6 +8,7 @@ import Appointment from '../models/Appointment.js';
 import AuditLog from '../models/AuditLog.js';
 import { adminAuth } from '../middleware/auth.js';
 import { emitToUser } from '../socket.js';
+import { statsCache } from '../cache.js';
 
 const router = express.Router();
 
@@ -34,6 +35,10 @@ async function logAction(req, action, targetType, targetId, targetLabel, metadat
 // GET /api/admin/stats
 router.get('/stats', adminAuth, async (req, res) => {
   try {
+    // Serve from cache if available (avoids ~12 DB queries on every 30s poll)
+    const cached = statsCache.get('admin_stats');
+    if (cached) return res.json(cached);
+
     const startOfMonth = new Date();
     startOfMonth.setDate(1);
     startOfMonth.setHours(0, 0, 0, 0);
@@ -71,12 +76,14 @@ router.get('/stats', adminAuth, async (req, res) => {
       return { stage: idx, label, count: found ? found.count : 0 };
     });
 
-    res.json({
+    const result = {
       totalUsers, totalReports, totalDoctors, pendingDoctors, recentReports,
       stageDistribution: distribution,
       activeUsers, suspendedUsers, newUsersThisMonth,
       highRiskPatients, totalConsultations, totalAppointments,
-    });
+    };
+    statsCache.set('admin_stats', result);
+    res.json(result);
   } catch (err) {
     console.error('Admin stats error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -251,7 +258,8 @@ router.get('/users', adminAuth, async (req, res) => {
     const query = {};
     if (role) query.role = role;
     if (search) {
-      const re = new RegExp(search, 'i');
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const re = new RegExp(escaped, 'i');
       query.$or = [{ firstName: re }, { lastName: re }, { email: re }];
     }
     const skip = (parseInt(page) - 1) * parseInt(limit);
@@ -283,9 +291,11 @@ router.patch('/users/:id/suspend', adminAuth, async (req, res) => {
     user.isSuspended = isSuspended;
     await user.save();
 
-    // Kick the user out in real-time if they are currently online
+    // Notify the user in real-time about their account status change
     if (isSuspended) {
       emitToUser(user._id.toString(), 'account_suspended', {});
+    } else {
+      emitToUser(user._id.toString(), 'account_unsuspended', {});
     }
 
     await logAction(
@@ -297,6 +307,7 @@ router.patch('/users/:id/suspend', adminAuth, async (req, res) => {
       { role: user.role },
     );
 
+    statsCache.invalidate('admin_stats');
     res.json({ message: `User ${isSuspended ? 'suspended' : 'unsuspended'}`, user });
   } catch (err) {
     console.error('Suspend user error:', err);
@@ -309,24 +320,31 @@ router.patch('/users/:id/suspend', adminAuth, async (req, res) => {
 // GET /api/admin/doctors
 router.get('/doctors', adminAuth, async (req, res) => {
   try {
-    const { search } = req.query;
-    let query = Doctor.find();
+    const { search, page = 1, limit = 20 } = req.query;
+    let filter = {};
 
     if (search) {
-      // Search by specialization or license number
-      query = Doctor.find({
+      const escaped = search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      filter = {
         $or: [
-          { specialization: new RegExp(search, 'i') },
-          { licenseNumber: new RegExp(search, 'i') },
+          { specialization: new RegExp(escaped, 'i') },
+          { licenseNumber: new RegExp(escaped, 'i') },
         ],
-      });
+      };
     }
 
-    const doctors = await query
-      .populate('user', 'firstName lastName email profileImage')
-      .sort({ createdAt: -1 });
+    const skip = (parseInt(page) - 1) * parseInt(limit);
 
-    res.json({ doctors });
+    const [doctors, total] = await Promise.all([
+      Doctor.find(filter)
+        .populate('user', 'firstName lastName email profileImage')
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit)),
+      Doctor.countDocuments(filter),
+    ]);
+
+    res.json({ doctors, total, page: parseInt(page), pages: Math.ceil(total / parseInt(limit)) });
   } catch (err) {
     console.error('Admin doctors error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -360,6 +378,7 @@ router.patch('/doctors/:id/verify', adminAuth, async (req, res) => {
 
     // Notify the doctor in real-time so their dashboard reflects the change immediately
     emitToUser(doctor.user._id.toString(), 'profile_updated', { isVerified });
+    statsCache.invalidate('admin_stats');
 
     res.json({ message: `Doctor ${isVerified ? 'verified' : 'unverified'}`, doctor });
   } catch (err) {

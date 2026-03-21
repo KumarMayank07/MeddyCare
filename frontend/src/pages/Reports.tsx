@@ -11,10 +11,11 @@ import {
 } from "@/components/ui/select";
 import {
   Loader2, Calendar, Eye, AlertCircle, CheckCircle, XCircle, Stethoscope,
-  MessageCircle, Send, ChevronDown, ChevronUp, Upload, Clock, Activity,
+  MessageCircle, Send, ChevronDown, ChevronUp, Upload, Clock, Activity, Download,
 } from "lucide-react";
 import { useAuth } from "@/contexts/AuthContext";
 import { useSocket } from "@/hooks/use-socket";
+import { useNotifications } from "@/contexts/NotificationContext";
 import apiService from "@/lib/api";
 
 interface Report {
@@ -89,7 +90,9 @@ interface Message {
   _id?: string;
   senderId: string;
   senderRole: "patient" | "doctor";
+  type?: "text" | "image";
   text?: string;
+  imageUrl?: string;
   timestamp: string;
 }
 
@@ -118,6 +121,7 @@ const STATUS_ICONS: Record<string, JSX.Element> = {
 export default function Reports() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const consultRefs = useRef<Record<string, HTMLDivElement | null>>({});
   const [prediction, setPrediction] = useState<any>(null);
   const [uploading, setUploading] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
@@ -126,6 +130,7 @@ export default function Reports() {
   const [notification, setNotification] = useState<ToastNotification | null>(null);
   const { user } = useAuth();
   const { socket, connected } = useSocket();
+  const { setActiveConsultation } = useNotifications();
 
   // Consultation request state
   const [consultReport, setConsultReport]     = useState<Report | null>(null);
@@ -146,6 +151,38 @@ export default function Reports() {
     fetchReports();
     fetchMyConsultations();
   }, []);
+
+  // Socket: listen for consultation status changes on the personal room (always connected)
+  useEffect(() => {
+    if (!socket) return;
+    const onConsultationUpdated = (payload: {
+      consultationId: string;
+      status: string;
+      followUpDate?: string;
+      doctorName?: string;
+    }) => {
+      setConsultations(prev =>
+        prev.map(c =>
+          c._id === payload.consultationId
+            ? {
+                ...c,
+                status: payload.status as Consultation["status"],
+                // Merge follow-up date into prescription if provided
+                ...(payload.followUpDate && {
+                  prescription: { ...(c.prescription ?? {}), followUpDate: payload.followUpDate },
+                }),
+              }
+            : c
+        )
+      );
+      // If this consultation is currently expanded, reload its full data to get diagnosis etc.
+      if (payload.status === "completed") {
+        fetchMyConsultations();
+      }
+    };
+    socket.on("consultation_updated", onConsultationUpdated);
+    return () => { socket.off("consultation_updated", onConsultationUpdated); };
+  }, [socket]);
 
   // Socket: join/leave consultation rooms and receive messages
   useEffect(() => {
@@ -188,9 +225,20 @@ export default function Reports() {
       c.report?._id === reportId && ["pending", "in_review"].includes(c.status)
     ) ?? null;
 
+  const scrollToConsult = (id: string) => {
+    // Expand if not already open
+    if (expandedConsult !== id) {
+      handleExpandConsult(id);
+    }
+    setTimeout(() => {
+      consultRefs.current[id]?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 80);
+  };
+
   const handleExpandConsult = async (id: string) => {
-    if (expandedConsult === id) { setExpandedConsult(null); return; }
+    if (expandedConsult === id) { setExpandedConsult(null); setActiveConsultation(null); return; }
     setExpandedConsult(id);
+    setActiveConsultation(id);
     try {
       const { messages: loaded } = await apiService.getConsultationMessages(id);
       setConsultMessages(prev => {
@@ -292,7 +340,213 @@ export default function Reports() {
   const formatDate = (dateString: string) =>
     new Intl.DateTimeFormat("en-US", { month: "short", day: "numeric", year: "numeric", hour: "2-digit", minute: "2-digit" }).format(new Date(dateString));
 
+  const downloadReportPDF = (report: Report) => {
+    const stageColor = ["#10b981","#3b82f6","#f59e0b","#f97316","#ef4444"][report.stage] ?? "#888";
+    const stageLabels = ["No DR","Mild","Moderate","Severe","Proliferative"];
+    const probRows = report.probabilities?.length === 5
+      ? stageLabels.map((lbl, i) => `
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:6px;">
+            <span style="width:90px;font-size:12px;color:#555">${lbl}</span>
+            <div style="flex:1;background:#eee;border-radius:4px;height:8px;overflow:hidden;">
+              <div style="width:${(report.probabilities[i]*100).toFixed(1)}%;background:${["#10b981","#3b82f6","#f59e0b","#f97316","#ef4444"][i]??stageColor};height:100%;"></div>
+            </div>
+            <span style="width:36px;text-align:right;font-size:12px;color:#555">${(report.probabilities[i]*100).toFixed(0)}%</span>
+          </div>`).join("")
+      : "";
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+      <title>MeddyCare — Retina Report</title>
+      <style>
+        body { font-family: Arial, sans-serif; max-width: 700px; margin: 40px auto; color: #111; }
+        @media print { body { margin: 20px; } .no-print { display: none; } }
+        h1 { font-size: 22px; margin: 0; }
+        .badge { display: inline-block; padding: 4px 12px; border-radius: 20px; font-size: 13px; font-weight: bold; color: #fff; }
+        .section { margin-top: 20px; }
+        .label { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: #888; margin-bottom: 4px; }
+        .report-text { background: #f8f8f8; border: 1px solid #e0e0e0; border-radius: 8px; padding: 14px; font-size: 13px; line-height: 1.6; }
+        table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+        td, th { padding: 8px 10px; font-size: 12px; border-bottom: 1px solid #eee; text-align: left; }
+        th { color: #888; font-weight: 500; }
+      </style></head><body>
+      <div style="display:flex;align-items:center;justify-content:space-between;border-bottom:2px solid #e0e0e0;padding-bottom:14px;">
+        <div>
+          <h1>MeddyCare — Retina Report</h1>
+          <p style="margin:4px 0 0;color:#666;font-size:13px;">Generated: ${new Date().toLocaleString()}</p>
+        </div>
+        <span class="badge" style="background:${stageColor}">Stage ${report.stage} — ${report.stageLabel}</span>
+      </div>
+      <div class="section">
+        <table>
+          <tr><th>Scan Date</th><td>${formatDate(report.createdAt)}</td>
+              <th>Stage</th><td><strong>${report.stage} — ${report.stageLabel}</strong></td></tr>
+          ${report.confidence != null ? `<tr><th>AI Confidence</th><td>${(report.confidence*100).toFixed(1)}%</td><td></td><td></td></tr>` : ""}
+        </table>
+      </div>
+      <div class="section">
+        <div class="label">Clinical Report</div>
+        <div class="report-text">${report.reportText}</div>
+      </div>
+      ${probRows ? `<div class="section"><div class="label">Stage Probabilities</div>${probRows}</div>` : ""}
+      ${report.imageUrl ? `<div class="section"><div class="label">Retina Image</div><img src="${report.imageUrl}" style="width:100%;max-height:300px;object-fit:contain;border:1px solid #ddd;border-radius:8px;background:#000;margin-top:6px;" /></div>` : ""}
+      <p style="margin-top:30px;font-size:11px;color:#aaa;text-align:center;">This report is generated by the MeddyCare AI screening system and is not a substitute for professional medical advice.</p>
+      <div class="no-print" style="text-align:center;margin-top:24px;">
+        <button onclick="window.print()" style="padding:10px 28px;background:#3b82f6;color:#fff;border:none;border-radius:8px;font-size:14px;cursor:pointer;">Print / Save as PDF</button>
+      </div>
+    </body></html>`;
+
+    const win = window.open("", "_blank", "width=800,height=700");
+    if (!win) return;
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+  };
+
   const stageMeta = (stage: number) => STAGE_META[stage] ?? STAGE_META[0];
+
+  const downloadConsultationPDF = (c: Consultation, reportLabel: string) => {
+    const stageColors = ["#10b981","#3b82f6","#f59e0b","#f97316","#ef4444"];
+    const stageColor = stageColors[c.report?.stage ?? 0] ?? "#888";
+    const doctorName = `Dr. ${c.doctor?.user?.firstName ?? ""} ${c.doctor?.user?.lastName ?? ""}`.trim();
+    const messages = consultMessages[c._id] ?? [];
+    const statusLabel = c.status === "in_review" ? "In Review" : c.status.charAt(0).toUpperCase() + c.status.slice(1);
+    const statusColor = { pending: "#eab308", in_review: "#3b82f6", completed: "#10b981", cancelled: "#6b7280" }[c.status] ?? "#888";
+
+    const row = (label: string, value: string) =>
+      `<tr><td class="lbl">${label}</td><td class="val">${value}</td></tr>`;
+
+    const section = (title: string, content: string, borderColor = "#e5e7eb") =>
+      `<div class="section" style="border-left:3px solid ${borderColor}">
+        <div class="section-title">${title}</div>
+        ${content}
+      </div>`;
+
+    const diagnosisHtml = c.diagnosis ? section("Doctor's Diagnosis", `
+      <table class="detail-table">
+        ${row("Findings", c.diagnosis.findings)}
+        ${row("Severity", `<span style="text-transform:capitalize;font-weight:600">${c.diagnosis.severity}</span>`)}
+        ${c.diagnosis.recommendations ? row("Recommendations", c.diagnosis.recommendations) : ""}
+      </table>`, "#10b981") : "";
+
+    const notesHtml = c.doctorNotes ? section("Doctor's Notes", `<p class="prose">${c.doctorNotes}</p>`, "#3b82f6") : "";
+
+    const prescHtml = c.prescription && (c.prescription.followUpDate || c.prescription.instructions || (c.prescription.medications?.length ?? 0) > 0)
+      ? section("Prescription & Follow-up", `
+        <table class="detail-table">
+          ${c.prescription.followUpDate ? row("Follow-up Date", `<strong>${new Date(c.prescription.followUpDate).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}</strong>`) : ""}
+          ${c.prescription.instructions ? row("Instructions", c.prescription.instructions) : ""}
+          ${c.prescription.medications?.length ? row("Medications", c.prescription.medications.map((m: any) =>
+            `<span class="med-tag">${[m.name, m.dosage, m.frequency, m.duration].filter(Boolean).join(" · ")}</span>`
+          ).join(" ")) : ""}
+        </table>`, "#8b5cf6") : "";
+
+    const patientMsgHtml = c.patientMessage
+      ? section("Patient's Complaint", `<p class="prose">${c.patientMessage}</p>`, "#0ea5e9") : "";
+
+    const msgsHtml = messages.length > 0 ? section("Consultation Chat Log", `
+      <table class="chat-table">
+        <thead><tr><th>Time</th><th>From</th><th>Message</th></tr></thead>
+        <tbody>
+          ${messages.map(m => `
+            <tr class="${m.senderRole === "doctor" ? "row-doctor" : "row-patient"}">
+              <td class="chat-time" style="white-space:nowrap">${new Date(m.timestamp).toLocaleDateString()} ${new Date(m.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td>
+              <td class="chat-from" style="white-space:nowrap">${m.senderRole === "doctor" ? doctorName : "Patient"}</td>
+              <td class="chat-msg">${m.text ?? ""}</td>
+            </tr>`).join("")}
+        </tbody>
+      </table>`, "#6b7280") : "";
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8">
+      <title>MeddyCare — Consultation Report</title>
+      <style>
+        *, *::before, *::after { box-sizing: border-box; }
+        body { font-family: "Helvetica Neue", Arial, sans-serif; max-width: 760px; margin: 0 auto; padding: 40px 32px; color: #111; font-size: 13px; line-height: 1.6; }
+        @media print { body { padding: 20px; } .no-print { display: none; } }
+
+        /* Header */
+        .header { display: flex; align-items: flex-start; justify-content: space-between; padding-bottom: 16px; border-bottom: 2px solid #111; margin-bottom: 20px; }
+        .header-brand { display: flex; align-items: center; gap: 10px; }
+        .brand-dot { width: 36px; height: 36px; background: linear-gradient(135deg, #3b82f6, #6366f1); border-radius: 10px; }
+        .brand-name { font-size: 18px; font-weight: 800; letter-spacing: -.3px; }
+        .brand-sub { font-size: 11px; color: #666; margin-top: 1px; }
+        .stage-badge { padding: 5px 14px; border-radius: 20px; font-size: 12px; font-weight: 700; color: #fff; white-space: nowrap; }
+
+        /* Info table */
+        .info-table { width: 100%; border-collapse: collapse; margin-bottom: 4px; }
+        .info-table td { padding: 4px 12px 4px 0; font-size: 12.5px; vertical-align: top; }
+        .info-table .lk { color: #888; font-weight: 600; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; width: 110px; }
+        .status-pill { display: inline-block; padding: 2px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; color: #fff; }
+
+        /* Sections */
+        .section { margin-top: 20px; padding: 14px 16px; border-radius: 6px; background: #fafafa; border: 1px solid #ebebeb; border-left-width: 3px; page-break-inside: avoid; }
+        .section-title { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .1em; color: #555; margin-bottom: 10px; }
+        .prose { margin: 0; color: #333; }
+
+        /* Detail rows inside section */
+        .detail-table { width: 100%; border-collapse: collapse; }
+        .detail-table .lbl { color: #666; font-size: 12px; font-weight: 600; width: 130px; padding: 3px 12px 3px 0; vertical-align: top; }
+        .detail-table .val { color: #111; font-size: 13px; padding: 3px 0; }
+        .med-tag { display: inline-block; background: #ede9fe; color: #5b21b6; border-radius: 4px; padding: 2px 8px; font-size: 11.5px; margin: 2px 2px 2px 0; }
+
+        /* Chat log table */
+        .chat-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+        .chat-table thead tr { background: #f3f4f6; }
+        .chat-table th { padding: 6px 10px; text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: #666; border-bottom: 1px solid #e5e7eb; }
+        .chat-table td { padding: 7px 10px; vertical-align: top; border-bottom: 1px solid #f0f0f0; }
+        .chat-time { color: #888; font-size: 11px; }
+        .chat-from { font-weight: 600; }
+        .chat-msg { color: #222; }
+        .row-doctor .chat-from { color: #16a34a; }
+        .row-patient .chat-from { color: #2563eb; }
+        .row-doctor { background: #fff; }
+        .row-patient { background: #f8faff; }
+
+        /* Footer */
+        .footer { margin-top: 40px; padding-top: 14px; border-top: 1px solid #e5e7eb; text-align: center; font-size: 10px; color: #aaa; }
+        .print-btn { display: block; margin: 20px auto 0; padding: 10px 28px; background: #3b82f6; color: #fff; border: none; border-radius: 8px; font-size: 14px; cursor: pointer; }
+      </style></head><body>
+
+      <div class="header">
+        <div class="header-brand">
+          <div class="brand-dot"></div>
+          <div>
+            <div class="brand-name">MeddyCare</div>
+            <div class="brand-sub">Consultation Report</div>
+          </div>
+        </div>
+        <div style="text-align:right">
+          <span class="stage-badge" style="background:${stageColor}">Stage ${c.report?.stage} — ${c.report?.stageLabel}</span>
+          <div style="font-size:10px;color:#888;margin-top:6px;">Generated: ${new Date().toLocaleString()}</div>
+        </div>
+      </div>
+
+      <!-- Summary -->
+      <table class="info-table">
+        <tr><td class="lk">Doctor</td><td><strong>${doctorName}</strong> &nbsp;·&nbsp; ${c.doctor?.specialization ?? ""}</td></tr>
+        <tr><td class="lk">Report</td><td>${reportLabel} &nbsp;·&nbsp; Stage ${c.report?.stage} &nbsp;·&nbsp; ${c.report?.stageLabel}</td></tr>
+        <tr><td class="lk">Requested</td><td>${new Date(c.createdAt).toLocaleString()}</td></tr>
+        <tr><td class="lk">Status</td><td><span class="status-pill" style="background:${statusColor}">${statusLabel}</span></td></tr>
+      </table>
+
+      ${patientMsgHtml}
+      ${diagnosisHtml}
+      ${notesHtml}
+      ${prescHtml}
+      ${msgsHtml}
+
+      <div class="footer">
+        This document is generated by MeddyCare AI Health Assistant and is not a substitute for professional medical advice.
+      </div>
+      <div class="no-print">
+        <button class="print-btn" onclick="window.print()">Print / Save as PDF</button>
+      </div>
+    </body></html>`;
+
+    const win = window.open("", "_blank", "width=840,height=780");
+    if (!win) return;
+    win.document.write(html);
+    win.document.close();
+    win.focus();
+  };
 
   // Active consultation for the currently open modal
   const modalActiveConsult = consultReport ? activeConsultForReport(consultReport._id) : null;
@@ -374,6 +628,39 @@ export default function Reports() {
         </Card>
       )}
 
+      {/* ── Progressive screening alert ── */}
+      {prediction && prediction.stage >= 2 && (
+        <div className={`flex items-start gap-4 p-5 rounded-2xl border-2 ${
+          prediction.stage >= 3
+            ? "bg-red-50 border-red-300 dark:bg-red-950/30 dark:border-red-700"
+            : "bg-amber-50 border-amber-300 dark:bg-amber-950/30 dark:border-amber-700"
+        }`}>
+          <div className={`p-2.5 rounded-xl shrink-0 ${prediction.stage >= 3 ? "bg-red-100 dark:bg-red-900/40" : "bg-amber-100 dark:bg-amber-900/40"}`}>
+            <AlertCircle className={`h-5 w-5 ${prediction.stage >= 3 ? "text-red-600" : "text-amber-600"}`} />
+          </div>
+          <div className="flex-1 min-w-0">
+            <p className={`font-bold text-base ${prediction.stage >= 3 ? "text-red-800 dark:text-red-300" : "text-amber-800 dark:text-amber-300"}`}>
+              {prediction.stage >= 3 ? "⚠️ Urgent:" : "📋 Recommendation:"}{" "}
+              Stage {prediction.stage} ({prediction.stageLabel}) Detected
+            </p>
+            <p className={`text-sm mt-1 ${prediction.stage >= 3 ? "text-red-700 dark:text-red-400" : "text-amber-700 dark:text-amber-400"}`}>
+              {prediction.stage >= 4
+                ? "Proliferative diabetic retinopathy is sight-threatening. Please consult a retina specialist immediately."
+                : prediction.stage === 3
+                ? "Severe DR requires prompt specialist evaluation to prevent vision loss. Book an appointment soon."
+                : "Moderate DR detected. Regular monitoring and a specialist review are recommended."}
+            </p>
+          </div>
+          <button
+            onClick={() => openConsultModal(prediction)}
+            className={`shrink-0 inline-flex items-center gap-1.5 px-4 py-1.5 rounded-md text-sm font-semibold text-white ${prediction.stage >= 3 ? "bg-red-600 hover:bg-red-700" : "bg-amber-600 hover:bg-amber-700"}`}
+          >
+            <Stethoscope className="h-4 w-4" />
+            Request Consultation
+          </button>
+        </div>
+      )}
+
       {/* ── Reports History ── */}
       <section>
         <div className="flex items-center gap-3 mb-6">
@@ -431,6 +718,14 @@ export default function Reports() {
                           </p>
                         </div>
                       </div>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="gap-1.5 shrink-0 text-xs"
+                        onClick={() => downloadReportPDF(report)}
+                      >
+                        <Download className="h-3.5 w-3.5" /> PDF
+                      </Button>
                     </div>
 
                     {/* Content grid */}
@@ -469,22 +764,30 @@ export default function Reports() {
                     <div className="pt-4 border-t border-border flex items-center gap-3 flex-wrap">
                       {existing ? (
                         <>
-                          <div className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-semibold ${STATUS_STYLES[existing.status]}`}>
+                          <button
+                            className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-semibold transition-opacity hover:opacity-80 ${STATUS_STYLES[existing.status]}`}
+                            onClick={() => scrollToConsult(existing._id)}
+                            title="View consultation details"
+                          >
                             {STATUS_ICONS[existing.status]}
                             Consultation {existing.status === "in_review" ? "In Review" : existing.status.charAt(0).toUpperCase() + existing.status.slice(1)}
                             {" — "}Dr. {existing.doctor?.user?.firstName} {existing.doctor?.user?.lastName}
-                          </div>
+                          </button>
                           <Button size="sm" variant="outline" className="gap-2 ml-auto" onClick={() => openConsultModal(report)}>
                             <Stethoscope className="h-4 w-4" /> Request Another Doctor
                           </Button>
                         </>
                       ) : anyConsult ? (
                         <>
-                          <div className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-semibold ${STATUS_STYLES[anyConsult.status]}`}>
+                          <button
+                            className={`flex items-center gap-2 px-4 py-2 rounded-xl border text-sm font-semibold transition-opacity hover:opacity-80 ${STATUS_STYLES[anyConsult.status]}`}
+                            onClick={() => scrollToConsult(anyConsult._id)}
+                            title="View consultation details"
+                          >
                             {STATUS_ICONS[anyConsult.status]}
                             {anyConsult.status === "completed" ? "Consultation Completed" : "Consultation Cancelled"}
                             {" — "}Dr. {anyConsult.doctor?.user?.firstName} {anyConsult.doctor?.user?.lastName}
-                          </div>
+                          </button>
                           <Button size="sm" variant="outline" className="gap-2 ml-auto" onClick={() => openConsultModal(report)}>
                             <Stethoscope className="h-4 w-4" /> Request New Consultation
                           </Button>
@@ -539,7 +842,7 @@ export default function Reports() {
               const reportLabel = reportNum !== null ? `Report #${reportNum}` : `Report …${c.report?._id?.slice(-6) ?? ""}`;
               const meta = stageMeta(c.report?.stage ?? 0);
               return (
-                <Card key={c._id} className={`overflow-hidden border-2 ${meta.border}`}>
+                <Card key={c._id} ref={(el) => { consultRefs.current[c._id] = el as HTMLDivElement | null; }} className={`overflow-hidden border-2 ${meta.border}`}>
                   <div className={`h-1 w-full ${meta.bg}`} />
                   <button
                     className="w-full text-left p-5 flex items-center justify-between gap-4 hover:bg-muted/30 transition-colors"
@@ -561,110 +864,208 @@ export default function Reports() {
                         <p className="text-xs text-muted-foreground">{c.doctor?.specialization} · {formatDate(c.createdAt)}</p>
                       </div>
                     </div>
-                    <div className="flex items-center gap-3 shrink-0">
+                    <div className="flex items-center gap-2 shrink-0">
                       <span className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border capitalize ${STATUS_STYLES[c.status]}`}>
                         {STATUS_ICONS[c.status]}
                         {c.status.replace("_", " ")}
                       </span>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); downloadConsultationPDF(c, reportLabel); }}
+                        title="Download consultation PDF"
+                        className="p-1.5 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                      >
+                        <Download className="h-4 w-4" />
+                      </button>
                       {isExpanded ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
                     </div>
                   </button>
 
                   {isExpanded && (
                     <div className="border-t border-border">
-                      {c.report && (
-                        <div className="px-5 pt-4 pb-3 flex items-center gap-4 bg-muted/30 border-b border-border">
-                          {c.report.imageUrl && (
-                            <img src={c.report.imageUrl} alt="Retina" className="w-16 h-16 rounded-xl object-contain bg-black border border-border shrink-0" />
-                          )}
-                          <div className="min-w-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                              <span className="text-xs font-semibold text-muted-foreground">{reportLabel}</span>
-                              <span className={`text-xs px-2 py-0.5 rounded-full font-semibold border ${meta.light} ${meta.border} ${meta.text}`}>
-                                Stage {c.report.stage} · {c.report.stageLabel}
-                              </span>
-                            </div>
-                            {c.report.reportText && (
-                              <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{c.report.reportText}</p>
-                            )}
-                          </div>
-                        </div>
-                      )}
+                      {/* ── Two-column layout: left = report+diagnosis, right = chat ── */}
+                      <div className="grid md:grid-cols-[1fr_1.1fr] divide-y md:divide-y-0 md:divide-x divide-border">
 
-                      {c.patientMessage && (
-                        <div className="px-5 pt-4 pb-2">
-                          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-2">Your initial message</p>
-                          <p className="text-sm bg-muted/50 p-3 rounded-xl border border-border">{c.patientMessage}</p>
-                        </div>
-                      )}
+                        {/* ── LEFT PANEL: report info + diagnosis + prescription ── */}
+                        <div className="flex flex-col gap-0 overflow-hidden">
 
-                      {c.diagnosis && (
-                        <div className="px-5 pt-3 pb-2">
-                          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-2">Doctor's Diagnosis</p>
-                          <div className="bg-green-50 dark:bg-green-950/30 border border-green-200 dark:border-green-800 rounded-xl p-4 space-y-1.5 text-sm">
-                            <p><span className="font-semibold">Findings:</span> {c.diagnosis.findings}</p>
-                            <p><span className="font-semibold">Severity:</span> {c.diagnosis.severity}</p>
-                            {c.diagnosis.recommendations && (
-                              <p><span className="font-semibold">Recommendations:</span> {c.diagnosis.recommendations}</p>
-                            )}
-                          </div>
-                        </div>
-                      )}
-
-                      {c.doctorNotes && (
-                        <div className="px-5 pt-2 pb-2">
-                          <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-2">Doctor's Notes</p>
-                          <p className="text-sm bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 p-4 rounded-xl">{c.doctorNotes}</p>
-                        </div>
-                      )}
-
-                      <div className="px-5 pt-3 pb-2">
-                        <p className="text-xs font-semibold uppercase tracking-widest text-muted-foreground mb-3">Messages</p>
-                        <div className="space-y-2 max-h-72 overflow-y-auto pr-1 rounded-xl bg-muted/20 p-3 border border-border">
-                          {messages.length === 0 ? (
-                            <p className="text-sm text-muted-foreground text-center py-6">No messages yet. The doctor will reply here.</p>
-                          ) : (
-                            messages.map((msg, i) => {
-                              const isDoctor = msg.senderRole === "doctor";
-                              return (
-                                <div key={msg._id ?? i} className={`flex ${isDoctor ? "justify-end" : "justify-start"}`}>
-                                  <div className={`max-w-[75%] px-4 py-2.5 rounded-2xl text-sm shadow-sm ${
-                                    isDoctor ? "bg-emerald-600 text-white rounded-tr-sm" : "bg-sky-500 text-white rounded-tl-sm"
-                                  }`}>
-                                    <p className="text-xs font-semibold mb-0.5 opacity-80">{isDoctor ? `Dr. ${c.doctor?.user?.firstName}` : "You"}</p>
-                                    <p>{msg.text}</p>
-                                    <p className="text-xs mt-1 opacity-60">{new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</p>
-                                  </div>
+                          {/* Report snapshot */}
+                          {c.report && (
+                            <div className="flex items-center gap-3 px-5 py-4 bg-muted/30">
+                              {c.report.imageUrl && (
+                                <img src={c.report.imageUrl} alt="Retina" className="w-14 h-14 rounded-xl object-contain bg-black border border-border shrink-0" />
+                              )}
+                              <div className="min-w-0">
+                                <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                                  <span className="text-xs font-semibold text-muted-foreground">{reportLabel}</span>
+                                  <span className={`text-xs px-2 py-0.5 rounded-full font-semibold border ${meta.light} ${meta.border} ${meta.text}`}>
+                                    Stage {c.report.stage} · {c.report.stageLabel}
+                                  </span>
                                 </div>
-                              );
-                            })
+                                {c.report.reportText && (
+                                  <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">{c.report.reportText}</p>
+                                )}
+                              </div>
+                            </div>
                           )}
-                          <div ref={messagesEndRef} />
+
+                          {/* Patient's initial message */}
+                          {c.patientMessage && (
+                            <div className="px-5 py-4 border-t border-border">
+                              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Your Initial Message</p>
+                              <p className="text-sm bg-sky-50 dark:bg-sky-950/30 border border-sky-200 dark:border-sky-800 text-sky-900 dark:text-sky-200 p-3 rounded-xl leading-relaxed">{c.patientMessage}</p>
+                            </div>
+                          )}
+
+                          {/* Diagnosis */}
+                          {c.diagnosis && (
+                            <div className="px-5 py-4 border-t border-border">
+                              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Doctor's Diagnosis</p>
+                              <div className="bg-emerald-50 dark:bg-emerald-950/30 border border-emerald-200 dark:border-emerald-800 rounded-xl p-4 space-y-1.5 text-sm">
+                                <p><span className="font-semibold text-emerald-800 dark:text-emerald-300">Findings:</span> <span className="text-emerald-700 dark:text-emerald-400">{c.diagnosis.findings}</span></p>
+                                <p><span className="font-semibold text-emerald-800 dark:text-emerald-300">Severity:</span> <span className="text-emerald-700 dark:text-emerald-400 capitalize">{c.diagnosis.severity}</span></p>
+                                {c.diagnosis.recommendations && (
+                                  <p><span className="font-semibold text-emerald-800 dark:text-emerald-300">Recommendations:</span> <span className="text-emerald-700 dark:text-emerald-400">{c.diagnosis.recommendations}</span></p>
+                                )}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Doctor notes */}
+                          {c.doctorNotes && (
+                            <div className="px-5 py-4 border-t border-border">
+                              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Doctor's Notes</p>
+                              <p className="text-sm bg-blue-50 dark:bg-blue-950/30 border border-blue-200 dark:border-blue-800 text-blue-900 dark:text-blue-200 p-4 rounded-xl leading-relaxed">{c.doctorNotes}</p>
+                            </div>
+                          )}
+
+                          {/* Prescription */}
+                          {c.prescription && (c.prescription.followUpDate || c.prescription.instructions || c.prescription.medications?.length > 0) && (
+                            <div className="px-5 py-4 border-t border-border">
+                              <p className="text-[11px] font-semibold uppercase tracking-widest text-muted-foreground mb-2">Prescription</p>
+                              <div className="bg-violet-50 dark:bg-violet-950/30 border border-violet-200 dark:border-violet-800 rounded-xl p-4 space-y-3">
+                                {c.prescription.followUpDate && (
+                                  <div className="flex items-center gap-2 text-sm">
+                                    <Calendar className="h-4 w-4 text-violet-600 dark:text-violet-400 shrink-0" />
+                                    <span className="font-semibold text-violet-800 dark:text-violet-300">Follow-up:</span>
+                                    <span className="text-violet-700 dark:text-violet-400">
+                                      {new Date(c.prescription.followUpDate).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" })}
+                                    </span>
+                                  </div>
+                                )}
+                                {c.prescription.instructions && (
+                                  <div className="text-sm">
+                                    <span className="font-semibold text-violet-800 dark:text-violet-300">Instructions: </span>
+                                    <span className="text-violet-700 dark:text-violet-400">{c.prescription.instructions}</span>
+                                  </div>
+                                )}
+                                {c.prescription.medications && c.prescription.medications.length > 0 && (
+                                  <div>
+                                    <p className="text-xs font-semibold text-violet-800 dark:text-violet-300 mb-1.5">Medications</p>
+                                    <div className="space-y-1">
+                                      {c.prescription.medications.map((med: any, i: number) => (
+                                        <div key={i} className="text-sm text-violet-700 dark:text-violet-400 flex gap-2 flex-wrap">
+                                          <span className="font-medium">{med.name}</span>
+                                          {med.dosage && <span>· {med.dosage}</span>}
+                                          {med.frequency && <span>· {med.frequency}</span>}
+                                          {med.duration && <span>· {med.duration}</span>}
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* ── RIGHT PANEL: chat ── */}
+                        <div className="flex flex-col h-[420px]">
+                          {/* Chat header */}
+                          <div className="px-5 py-3 border-b border-border bg-muted/20 flex items-center gap-2 shrink-0">
+                            <MessageCircle className="h-4 w-4 text-muted-foreground" />
+                            <span className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Chat with Dr. {c.doctor?.user?.firstName} {c.doctor?.user?.lastName}</span>
+                          </div>
+
+                          {/* Messages */}
+                          <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
+                            {messages.length === 0 ? (
+                              <div className="flex flex-col items-center justify-center h-full gap-3 text-center">
+                                <div className="p-3 bg-muted rounded-2xl">
+                                  <MessageCircle className="h-6 w-6 text-muted-foreground" />
+                                </div>
+                                <p className="text-sm text-muted-foreground">No messages yet.<br />Send a message to the doctor.</p>
+                              </div>
+                            ) : (
+                              messages.map((msg, i) => {
+                                const isDoctor = msg.senderRole === "doctor";
+                                return (
+                                  <div key={msg._id ?? i} className={`flex items-end gap-2 ${isDoctor ? "justify-start" : "justify-end"}`}>
+                                    {isDoctor && (
+                                      <div className="w-7 h-7 rounded-full bg-emerald-100 dark:bg-emerald-900/50 border border-emerald-200 dark:border-emerald-700 flex items-center justify-center shrink-0 mb-0.5">
+                                        <span className="text-[10px] font-bold text-emerald-700 dark:text-emerald-300">
+                                          {c.doctor?.user?.firstName?.[0]?.toUpperCase()}
+                                        </span>
+                                      </div>
+                                    )}
+                                    <div className={`max-w-[72%] px-3.5 py-2.5 rounded-2xl text-sm shadow-sm ${
+                                      isDoctor
+                                        ? "bg-muted border border-border text-foreground rounded-bl-sm"
+                                        : "bg-blue-600 text-white rounded-br-sm"
+                                    }`}>
+                                      <p className={`text-[11px] font-semibold mb-1 ${isDoctor ? "text-muted-foreground" : "text-blue-200"}`}>
+                                        {isDoctor ? `Dr. ${c.doctor?.user?.firstName}` : "You"}
+                                      </p>
+                                      {msg.type === "image" && msg.imageUrl
+                                        ? <img src={msg.imageUrl} alt={msg.text ?? "image"} className="rounded-xl max-w-full max-h-48 object-cover mb-1" />
+                                        : <p className="leading-snug">{msg.text}</p>
+                                      }
+                                      <p className={`text-[10px] mt-1 ${isDoctor ? "text-muted-foreground" : "text-blue-300"}`}>
+                                        {new Date(msg.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                      </p>
+                                    </div>
+                                    {!isDoctor && (
+                                      <div className="w-7 h-7 rounded-full bg-blue-100 dark:bg-blue-900/50 border border-blue-200 dark:border-blue-700 flex items-center justify-center shrink-0 mb-0.5">
+                                        <span className="text-[10px] font-bold text-blue-700 dark:text-blue-300">
+                                          {user?.firstName?.[0]?.toUpperCase() ?? "Y"}
+                                        </span>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            )}
+                            <div ref={messagesEndRef} />
+                          </div>
+
+                          {/* Reply input */}
+                          {c.status !== "cancelled" ? (
+                            <div className="px-4 py-3 border-t border-border bg-background shrink-0">
+                              <div className="flex gap-2 items-end">
+                                <textarea
+                                  rows={1}
+                                  className="flex-1 rounded-xl border border-input bg-muted/40 px-3.5 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring max-h-24"
+                                  placeholder="Reply to doctor…"
+                                  value={replyText[c._id] ?? ""}
+                                  onChange={(e) => setReplyText(prev => ({ ...prev, [c._id]: e.target.value }))}
+                                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendReply(c._id); } }}
+                                />
+                                <Button
+                                  size="icon"
+                                  className="rounded-xl h-10 w-10 shrink-0 bg-blue-600 hover:bg-blue-700"
+                                  onClick={() => handleSendReply(c._id)}
+                                  disabled={!(replyText[c._id]?.trim())}
+                                >
+                                  <Send className="h-4 w-4" />
+                                </Button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="px-4 py-3 border-t border-border bg-muted/20 shrink-0">
+                              <p className="text-xs text-center text-muted-foreground">This consultation is closed.</p>
+                            </div>
+                          )}
                         </div>
                       </div>
-
-                      {c.status !== "cancelled" && (
-                        <div className="px-5 pb-5 pt-2">
-                          <div className="flex gap-2">
-                            <textarea
-                              rows={1}
-                              className="flex-1 rounded-xl border border-input bg-background px-4 py-2.5 text-sm resize-none focus:outline-none focus:ring-2 focus:ring-ring"
-                              placeholder="Reply to doctor…"
-                              value={replyText[c._id] ?? ""}
-                              onChange={(e) => setReplyText(prev => ({ ...prev, [c._id]: e.target.value }))}
-                              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendReply(c._id); } }}
-                            />
-                            <Button
-                              size="icon"
-                              className="rounded-xl h-10 w-10 shrink-0"
-                              onClick={() => handleSendReply(c._id)}
-                              disabled={!(replyText[c._id]?.trim())}
-                            >
-                              <Send className="h-4 w-4" />
-                            </Button>
-                          </div>
-                        </div>
-                      )}
                     </div>
                   )}
                 </Card>

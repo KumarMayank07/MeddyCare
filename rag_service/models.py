@@ -1,32 +1,30 @@
 # rag_service/models.py
-from pydantic import BaseModel, Field, HttpUrl
-from typing import List, Optional, Any
 from datetime import datetime
+from typing import Any, List, Optional
+
+from pydantic import BaseModel, Field, HttpUrl
+
 
 class IngestURLRequest(BaseModel):
     url: HttpUrl
     title: Optional[str] = None
 
-class IngestPdfResponse(BaseModel):
-    doc_id: str
-    chunks_added: int
 
 class ChatRequest(BaseModel):
-    message: str
+    message: str = Field(..., min_length=1, max_length=4000)
     chat_id: Optional[str] = None
-    top_k: Optional[int] = None
-    timezone: Optional[str] = 'UTC' 
+    top_k: Optional[int] = Field(None, ge=1, le=20)
+
 
 class ChatResponse(BaseModel):
     chat_id: str
+    message_id: Optional[str] = None   # stable MongoDB _id for frontend dedup
     answer: str
     sources: List[Any] = []
+    suggestions: List[str] = []        # follow-up question suggestions
     timestamp: datetime
 
-class MessageModel(BaseModel):
-    chat_id: str
-    user_id: str
-    role: str  # 'user' | 'assistant' | 'system'
-    text: str
-    timestamp: Optional[datetime] = None
-    meta: Optional[dict] = None
+
+class UpdateChatRequest(BaseModel):
+    title: Optional[str] = Field(None, min_length=1, max_length=200)
+    archived: Optional[bool] = None

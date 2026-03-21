@@ -7,15 +7,13 @@ import { auth } from "../middleware/auth.js";
 
 const router = express.Router();
 
-const PREDICT_SERVICE = process.env.PREDICT_SERVICE_URL;
-if (!PREDICT_SERVICE) {
-  console.error("PREDICT_SERVICE_URL is not set — /api/reports/analyze will not work");
-}
+// Read at request time to avoid ES module load-before-dotenv issue
+const getPredictService = () => process.env.PREDICT_SERVICE_URL;
 
-// Per-user rate limit: 2 analyses per 2 minutes (each call can take ~60s)
+// Per-user rate limit: 20 analyses per 10 minutes
 const analyzeRateLimit = rateLimit({
-  windowMs: 2 * 60 * 1000,
-  max: 2,
+  windowMs: 10 * 60 * 1000,
+  max: 20,
   keyGenerator: (req) => req.user?._id?.toString() || req.ip,
   message: { error: "Too many analysis requests. Please wait a moment before trying again." },
   standardHeaders: true,
@@ -28,6 +26,7 @@ router.post("/analyze", auth, analyzeRateLimit, async (req, res) => {
     if (!imageUrl)
       return res.status(400).json({ error: "imageUrl is required" });
 
+    const PREDICT_SERVICE = getPredictService();
     if (!PREDICT_SERVICE) {
       return res.status(503).json({ error: "Prediction service is not configured on this server" });
     }

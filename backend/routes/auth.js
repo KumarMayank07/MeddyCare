@@ -17,30 +17,99 @@ async function notifyAdmins(event, data = {}) {
 const router = express.Router();
 
 // ── Email helper ─────────────────────────────────────────────────────────────
-// Logs to console in development; wire up nodemailer/SendGrid/etc. in production
-// by replacing the body of this function.
-async function sendVerificationEmail(email, _firstName, token) {
+import nodemailer from "nodemailer";
+
+const _verifyTransporter =
+  process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS
+    ? nodemailer.createTransport({
+        host: process.env.EMAIL_HOST,
+        port: parseInt(process.env.EMAIL_PORT || "587"),
+        secure: process.env.EMAIL_PORT === "465",
+        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
+      })
+    : null;
+
+async function sendVerificationEmail(email, firstName, token) {
   const verifyUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/verify-email?token=${token}`;
 
-  if (process.env.NODE_ENV !== "production") {
+  const html = `
+    <!DOCTYPE html>
+    <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1.0"></head>
+    <body style="margin:0;padding:0;background:#f1f5f9;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,'Helvetica Neue',Arial,sans-serif">
+      <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f1f5f9;padding:32px 16px">
+        <tr><td align="center">
+          <table cellpadding="0" cellspacing="0" border="0" width="520" style="max-width:520px">
+
+            <!-- Header -->
+            <tr><td style="background:linear-gradient(135deg,#2563eb,#0ea5e9);padding:32px 28px;border-radius:16px 16px 0 0;text-align:center">
+              <div style="width:64px;height:64px;border-radius:20px;background:rgba(255,255,255,0.2);margin:0 auto 14px;line-height:64px;font-size:32px">🩺</div>
+              <h1 style="color:#ffffff;margin:0;font-size:22px;font-weight:700">Welcome to MeddyCare!</h1>
+              <p style="color:rgba(255,255,255,0.85);margin:8px 0 0;font-size:14px">Just one step to activate your account</p>
+            </td></tr>
+
+            <!-- Body -->
+            <tr><td style="background:#ffffff;padding:32px 28px">
+              <p style="margin:0 0 16px;color:#1e293b;font-size:15px;line-height:1.6">Hi <strong>${firstName || 'there'}</strong>,</p>
+              <p style="margin:0 0 20px;color:#475569;font-size:14px;line-height:1.7">Thank you for joining MeddyCare — your AI-powered retinal health platform. To get started with DR screenings, doctor consultations, and our AI health assistant, please verify your email address.</p>
+
+              <!-- CTA Button -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:24px">
+                <tr><td align="center">
+                  <a href="${verifyUrl}" style="display:inline-block;background:linear-gradient(135deg,#2563eb,#0ea5e9);color:#ffffff;padding:14px 36px;border-radius:12px;font-size:15px;font-weight:600;text-decoration:none;letter-spacing:0.3px">Verify My Email</a>
+                </td></tr>
+              </table>
+
+              <p style="margin:0 0 16px;color:#64748b;font-size:13px;line-height:1.6">Or copy and paste this link into your browser:</p>
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="margin-bottom:20px">
+                <tr><td style="background:#f1f5f9;border-radius:8px;padding:12px 16px;word-break:break-all">
+                  <a href="${verifyUrl}" style="color:#2563eb;font-size:12px;text-decoration:none">${verifyUrl}</a>
+                </td></tr>
+              </table>
+
+              <!-- What you get -->
+              <table cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f0f9ff;border-radius:12px;border-left:4px solid #2563eb;margin-bottom:8px">
+                <tr><td style="padding:16px 20px">
+                  <div style="font-size:13px;font-weight:600;color:#1e40af;margin-bottom:8px">What you can do on MeddyCare:</div>
+                  <div style="font-size:13px;color:#475569;line-height:1.7">
+                    🔬 Upload retina images for instant AI-powered DR screening<br>
+                    👨‍⚕️ Find and book verified eye specialists near you<br>
+                    💬 Chat with doctors in real-time for consultations<br>
+                    🤖 Ask our AI health assistant any eye-health questions<br>
+                    📋 Set medication reminders and track your health journey
+                  </div>
+                </td></tr>
+              </table>
+            </td></tr>
+
+            <!-- Security notice -->
+            <tr><td style="background:#fffbeb;padding:14px 28px;border-top:1px solid #fde68a">
+              <p style="margin:0;font-size:12px;color:#92400e;line-height:1.5">🔒 This verification link expires in <strong>24 hours</strong>. If you did not create an account on MeddyCare, please ignore this email — no action is needed.</p>
+            </td></tr>
+
+            <!-- Footer -->
+            <tr><td style="background:#f8fafc;padding:24px 28px;border-radius:0 0 16px 16px;border-top:1px solid #e2e8f0;text-align:center">
+              <div style="font-size:13px;font-weight:600;color:#64748b;margin-bottom:4px">MeddyCare</div>
+              <div style="font-size:12px;color:#94a3b8">AI-Powered Retinal Health Platform</div>
+              <div style="font-size:11px;color:#cbd5e1;margin-top:8px">This is an automated message. Please do not reply to this email.</div>
+            </td></tr>
+
+          </table>
+        </td></tr>
+      </table>
+    </body></html>`;
+
+  if (!_verifyTransporter) {
     console.log(`\n[DEV] Verification email for ${email}:`);
     console.log(`  Link: ${verifyUrl}\n`);
     return;
   }
 
-  // Production: use nodemailer or any transactional email service.
-  // Uncomment and configure when ready:
-  //
-  // import nodemailer from "nodemailer";
-  // const transporter = nodemailer.createTransport({ ... });
-  // await transporter.sendMail({
-  //   from: process.env.EMAIL_FROM,
-  //   to: email,
-  //   subject: "Verify your MeddyCare account",
-  //   html: `<p>Hi ${firstName},</p>
-  //          <p>Click <a href="${verifyUrl}">here</a> to verify your email.</p>`,
-  // });
-  console.log(`[PROD] Would send verification email to ${email} → ${verifyUrl}`);
+  await _verifyTransporter.sendMail({
+    from: `"MeddyCare" <${process.env.EMAIL_USER}>`,
+    to: email,
+    subject: "Verify your MeddyCare account",
+    html,
+  });
 }
 
 // ── Token generator ───────────────────────────────────────────────────────────
@@ -95,6 +164,7 @@ router.post(
         role: "user",
         emailVerificationToken: verificationToken,
         emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000), // 24h
+        lastLogin: new Date(),
       });
 
       await user.save();
@@ -105,8 +175,6 @@ router.post(
       );
 
       const token = generateToken(user);
-      user.lastLogin = new Date();
-      await user.save();
 
       notifyAdmins("admin_stats_updated", { type: "new_user" });
 
@@ -178,6 +246,7 @@ router.post(
         role: "doctor",
         emailVerificationToken: verificationToken,
         emailVerificationExpires: new Date(Date.now() + 24 * 60 * 60 * 1000),
+        lastLogin: new Date(),
       });
       await user.save();
 
@@ -221,8 +290,6 @@ router.post(
       );
 
       const token = generateToken(user);
-      user.lastLogin = new Date();
-      await user.save();
 
       notifyAdmins("admin_stats_updated", { type: "new_doctor" });
 
@@ -400,10 +467,27 @@ router.post("/logout", auth, async (_req, res) => {
 });
 
 // ── Refresh token ─────────────────────────────────────────────────────────────
-router.post("/refresh", auth, async (req, res) => {
+// Does NOT use `auth` middleware — it must accept EXPIRED tokens (that is the
+// whole point of a refresh endpoint). It verifies the signature but ignores
+// the expiration claim, then issues a fresh access token.
+router.post("/refresh", async (req, res) => {
   try {
-    const token = generateToken(req.user);
-    res.json({ token, user: req.user.getPublicProfile() });
+    const raw = req.header("Authorization")?.replace("Bearer ", "");
+    if (!raw) return res.status(401).json({ error: "No token provided." });
+
+    let decoded;
+    try {
+      decoded = jwt.verify(raw, process.env.JWT_SECRET_KEY, { ignoreExpiration: true });
+    } catch {
+      return res.status(401).json({ error: "Invalid token." });
+    }
+
+    const user = await User.findById(decoded.userId).select("-password");
+    if (!user) return res.status(401).json({ error: "User not found." });
+    if (user.isSuspended) return res.status(403).json({ error: "Account suspended. Contact support." });
+
+    const token = generateToken(user);
+    res.json({ token, user: user.getPublicProfile() });
   } catch (error) {
     console.error("Token refresh error:", error);
     res.status(500).json({ error: "Server error during token refresh" });

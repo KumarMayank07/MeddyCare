@@ -1,6 +1,15 @@
 import dotenv from "dotenv";
 dotenv.config();
 
+// ── Validate required environment variables before doing anything else ────────
+const REQUIRED_ENV = ["MONGODB_URI", "JWT_SECRET_KEY"];
+const missing = REQUIRED_ENV.filter((k) => !process.env[k]);
+if (missing.length > 0) {
+  console.error(`❌ Missing required environment variables: ${missing.join(", ")}`);
+  console.error("   Check your .env file and try again.");
+  process.exit(1);
+}
+
 import { createServer } from "http";
 import express from "express";
 import cors from "cors";
@@ -13,7 +22,6 @@ import { startCronJobs } from "./cron.js";
 import authRoutes from "./routes/auth.js";
 import userRoutes from "./routes/users.js";
 import doctorRoutes from "./routes/doctors.js";
-import chatRoutes from './routes/chat.js';
 import uploadRoutes from "./routes/upload.js";
 import reportsRouter from "./routes/reports.js";
 import remindersRouter from "./routes/reminders.js";
@@ -39,11 +47,8 @@ const io = new SocketServer(httpServer, {
 setupSocket(io);
 setIo(io);
 
-// Debug environment variables
-console.log("Environment check:");
-console.log("MONGODB_URI:", process.env.MONGODB_URI ? "Set" : "Not set");
-console.log("JWT_SECRET_KEY:", process.env.JWT_SECRET_KEY ? "Set" : "Not set");
-console.log("NODE_ENV:", process.env.NODE_ENV);
+// Trust the first proxy (nginx, AWS ALB, etc.) for accurate client IPs in rate limiter
+app.set("trust proxy", 1);
 
 // Security middleware
 app.use(helmet());
@@ -70,17 +75,28 @@ app.use(
   })
 );
 
-// Rate limiting
+// General API rate limiter
 const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
-  message: "Too many requests from this IP, please try again later.",
+  windowMs: 15 * 60 * 1000,
+  max: 200,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests from this IP, please try again later." },
 });
 app.use("/api/", limiter);
 
-// Body parsing middleware
-app.use(express.json({ limit: "10mb" }));
-app.use(express.urlencoded({ extended: true, limit: "10mb" }));
+// Stricter limiter for auth endpoints to slow brute-force attempts
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many authentication attempts, please try again later." },
+});
+
+// Body parsing middleware — 1 MB is sufficient; the upload endpoints use multipart
+app.use(express.json({ limit: "3mb" }));
+app.use(express.urlencoded({ extended: true, limit: "3mb" }));
 
 // Database connection with better error handling
 const connectDB = async () => {
@@ -116,10 +132,9 @@ app.get("/api/health", (req, res) => {
 
 // API v1 routes
 const v1 = express.Router();
-v1.use("/auth",          authRoutes);
+v1.use("/auth",          authLimiter, authRoutes);
 v1.use("/users",         userRoutes);
 v1.use("/doctors",       doctorRoutes);
-v1.use("/chat",          chatRoutes);
 v1.use("/upload",        uploadRoutes);
 v1.use("/reports",       reportsRouter);
 v1.use("/reminders",     remindersRouter);
@@ -145,9 +160,30 @@ app.use("*", (req, res) => {
   res.status(404).json({ error: "Route not found" });
 });
 
-httpServer.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
-  console.log(`🌍 Environment: ${process.env.NODE_ENV}`);
-  console.log(`📊 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`🔌 Socket.io listening on same port`);
+const server = httpServer.listen(PORT, () => {
+  console.log(`Server running on port ${PORT} [${process.env.NODE_ENV || "development"}]`);
+  console.log(`Health: http://localhost:${PORT}/api/health`);
 });
+
+// ── Graceful shutdown ─────────────────────────────────────────────────────────
+function gracefulShutdown(signal) {
+  console.log(`${signal} received. Shutting down gracefully...`);
+  server.close(async () => {
+    try {
+      await mongoose.connection.close();
+      console.log("MongoDB connection closed.");
+    } catch (err) {
+      console.error("Error closing MongoDB connection:", err.message);
+    }
+    process.exit(0);
+  });
+
+  // Force exit if still open after 10s
+  setTimeout(() => {
+    console.error("Forced shutdown after timeout.");
+    process.exit(1);
+  }, 10_000).unref();
+}
+
+process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
+process.on("SIGINT",  () => gracefulShutdown("SIGINT"));

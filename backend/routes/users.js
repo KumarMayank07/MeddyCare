@@ -28,7 +28,8 @@ router.put('/profile', [
   body('lastName').optional().trim().notEmpty(),
   body('phone').optional().trim(),
   body('dateOfBirth').optional().isISO8601(),
-  body('gender').optional().isIn(['male', 'female', 'other'])
+  body('gender').optional().isIn(['male', 'female', 'other']),
+  body('profileImage').optional().isString(),
 ], async (req, res) => {
   try {
     const errors = validationResult(req);
@@ -36,7 +37,7 @@ router.put('/profile', [
       return res.status(400).json({ errors: errors.array() });
     }
 
-    const allowedUpdates = ['firstName', 'lastName', 'phone', 'dateOfBirth', 'gender', 'address', 'preferences'];
+    const allowedUpdates = ['firstName', 'lastName', 'phone', 'dateOfBirth', 'gender', 'address', 'preferences', 'profileImage'];
     const updates = {};
     
     allowedUpdates.forEach(field => {
@@ -135,15 +136,21 @@ router.put('/password', [
 
     const { currentPassword, newPassword } = req.body;
 
+    // Re-fetch with password field (auth middleware excludes it via .select('-password'))
+    const userWithPassword = await User.findById(req.user._id);
+    if (!userWithPassword) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+
     // Verify current password
-    const isPasswordValid = await req.user.comparePassword(currentPassword);
+    const isPasswordValid = await userWithPassword.comparePassword(currentPassword);
     if (!isPasswordValid) {
       return res.status(400).json({ error: 'Current password is incorrect' });
     }
 
     // Update password
-    req.user.password = newPassword;
-    await req.user.save();
+    userWithPassword.password = newPassword;
+    await userWithPassword.save();
 
     res.json({ message: 'Password changed successfully' });
   } catch (error) {

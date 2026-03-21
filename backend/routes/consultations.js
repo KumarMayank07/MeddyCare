@@ -5,6 +5,7 @@ import Consultation from '../models/Consultation.js';
 import Message from '../models/Message.js';
 import Doctor from '../models/Doctor.js';
 import Report from '../models/Report.js';
+import Reminder from '../models/Reminder.js';
 import { auth, doctorAuth } from '../middleware/auth.js';
 import { emitConsultationUpdated, emitToUser } from '../socket.js';
 
@@ -69,7 +70,10 @@ router.post('/', [
     const populated = await populateConsultation(Consultation.findById(consultation._id));
 
     // Notify the doctor in real-time so their dashboard refreshes
-    emitToUser(doctor.user.toString(), 'new_consultation', { consultationId: consultation._id });
+    emitToUser(doctor.user.toString(), 'new_consultation', {
+      consultationId: consultation._id,
+      patientName: `${req.user.firstName} ${req.user.lastName}`.trim(),
+    });
 
     res.status(201).json({ message: 'Consultation request sent', consultation: populated });
   } catch (err) {
@@ -167,7 +171,16 @@ router.patch('/:id/status', doctorAuth, async (req, res) => {
     await consultation.save();
 
     // Push real-time status update to any connected participants
-    emitConsultationUpdated(consultation._id.toString(), status);
+    const statusNotifPayload = {
+      consultationId: consultation._id.toString(),
+      status,
+      doctorName: `Dr. ${req.user.firstName} ${req.user.lastName}`.trim(),
+    };
+    emitConsultationUpdated(consultation._id.toString(), status, {
+      doctorName: statusNotifPayload.doctorName,
+    });
+    // Also push directly to patient's personal room (always connected, regardless of page)
+    emitToUser(consultation.patient.toString(), 'consultation_updated', statusNotifPayload);
 
     const populated = await populateConsultation(Consultation.findById(consultation._id));
     res.json({ message: 'Status updated', consultation: populated });
@@ -214,7 +227,35 @@ router.patch('/:id/diagnose', [
     consultation.status      = 'completed';
 
     await consultation.save();
-    emitConsultationUpdated(consultation._id.toString(), 'completed');
+    const diagnoseNotifPayload = {
+      consultationId: consultation._id.toString(),
+      status: 'completed',
+      followUpDate: prescription?.followUpDate ?? null,
+      doctorName: `Dr. ${req.user.firstName} ${req.user.lastName}`.trim(),
+    };
+    emitConsultationUpdated(consultation._id.toString(), 'completed', {
+      followUpDate: diagnoseNotifPayload.followUpDate,
+      doctorName: diagnoseNotifPayload.doctorName,
+    });
+    // Also push directly to patient's personal room (always connected, regardless of page)
+    emitToUser(consultation.patient.toString(), 'consultation_updated', diagnoseNotifPayload);
+
+    // Auto-create a follow-up reminder for the patient if doctor set a follow-up date
+    if (prescription?.followUpDate) {
+      try {
+        const doctorName = `${req.user.firstName ?? ''} ${req.user.lastName ?? ''}`.trim() || 'your doctor';
+        await Reminder.create({
+          user: consultation.patient,
+          title: 'Follow-up Appointment',
+          description: `Follow-up visit recommended by Dr. ${doctorName} based on your retina consultation.`,
+          reminderType: 'followup',
+          scheduledAt: new Date(prescription.followUpDate),
+        });
+      } catch (reminderErr) {
+        // Non-critical — log but don't fail the response
+        console.error('Failed to create follow-up reminder:', reminderErr.message);
+      }
+    }
 
     const populated = await populateConsultation(Consultation.findById(consultation._id));
     res.json({ message: 'Diagnosis saved', consultation: populated });
@@ -224,7 +265,7 @@ router.patch('/:id/diagnose', [
   }
 });
 
-// GET /api/v1/consultations/:id/messages
+// GET /api/consultations/:id/messages
 // Paginated message history for a consultation
 // Query params: limit (default 50), before (timestamp cursor for older messages)
 router.get('/:id/messages', auth, async (req, res) => {
@@ -263,7 +304,7 @@ router.get('/:id/messages', auth, async (req, res) => {
   }
 });
 
-// POST /api/v1/consultations/:id/messages
+// POST /api/consultations/:id/messages
 // REST fallback — prefer Socket.io for real-time; use this for offline/retry scenarios
 router.post('/:id/messages', [
   auth,

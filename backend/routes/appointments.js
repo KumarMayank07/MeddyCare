@@ -60,7 +60,10 @@ router.post('/', [
     });
 
     // Notify the doctor in real-time so their dashboard refreshes
-    emitToUser(doctor.user._id.toString(), 'new_appointment', { appointmentId: appointment._id });
+    emitToUser(doctor.user._id.toString(), 'new_appointment', {
+      appointmentId: appointment._id,
+      patientName: `${req.user.firstName} ${req.user.lastName}`.trim(),
+    });
 
     res.status(201).json({ message: 'Appointment booked successfully', appointment });
   } catch (error) {
@@ -106,7 +109,11 @@ router.patch('/:id/confirm', doctorAuth, async (req, res) => {
     appointment.status = 'confirmed';
     await appointment.save();
     // Notify the patient their appointment was confirmed
-    emitToUser(appointment.user.toString(), 'appointment_updated', { appointmentId: appointment._id, status: 'confirmed' });
+    emitToUser(appointment.user.toString(), 'appointment_updated', {
+      appointmentId: appointment._id,
+      status: 'confirmed',
+      doctorName: `Dr. ${req.user.firstName} ${req.user.lastName}`.trim(),
+    });
 
     await appointment.populate('user', 'firstName lastName email profileImage phone');
 
@@ -145,7 +152,11 @@ router.patch('/:id/reject', doctorAuth, async (req, res) => {
     appointment.status = 'cancelled';
     await appointment.save();
     // Notify the patient their appointment was rejected
-    emitToUser(appointment.user.toString(), 'appointment_updated', { appointmentId: appointment._id, status: 'cancelled' });
+    emitToUser(appointment.user.toString(), 'appointment_updated', {
+      appointmentId: appointment._id,
+      status: 'cancelled',
+      doctorName: `Dr. ${req.user.firstName} ${req.user.lastName}`.trim(),
+    });
 
     // Mark ALL linked reminders (patient + doctor if any) as completed
     await Reminder.updateMany(
@@ -209,7 +220,9 @@ router.patch('/:id/cancel', auth, async (req, res) => {
     const doctorProfile = await Doctor.findById(appointment.doctor).select('user');
     if (doctorProfile) {
       emitToUser(doctorProfile.user.toString(), 'appointment_updated', {
-        appointmentId: appointment._id, status: 'cancelled',
+        appointmentId: appointment._id,
+        status: 'cancelled',
+        patientName: `${req.user.firstName} ${req.user.lastName}`.trim(),
       });
     }
 

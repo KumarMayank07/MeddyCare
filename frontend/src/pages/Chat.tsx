@@ -98,13 +98,13 @@ function ToastNotification({
   const isError = notification.type === "error";
   const bgColor = isError
     ? "from-red-50 via-red-50 to-red-100 dark:from-red-950/60 dark:via-red-950/60 dark:to-red-900/60"
-    : "from-green-50 to-green-100 dark:from-green-950/60 dark:to-green-900/60";
+    : "from-sky-400 to-sky-500 dark:from-sky-500 dark:to-sky-600";
   const iconBgColor = isError
     ? "bg-gradient-to-br from-red-500 to-red-600"
-    : "bg-gradient-to-br from-gray-700 to-gray-800";
+    : "bg-gradient-to-br from-white/30 to-white/20";
   const buttonColor = isError
     ? "bg-gradient-to-r from-red-500 to-red-600 hover:from-red-600 hover:to-red-700"
-    : "bg-gradient-to-r from-gray-700 to-gray-800 hover:from-gray-800 hover:to-gray-900";
+    : "bg-white/20 hover:bg-white/30 border border-white/40";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 animate-fade-in">
@@ -123,14 +123,14 @@ function ToastNotification({
         </div>
 
         {/* Title */}
-        <h3 className="text-center text-2xl font-bold text-foreground mb-4">
+        <h3 className="text-center text-2xl font-bold text-white mb-4">
           {notification.title}
         </h3>
 
         {/* Messages */}
         <div className="space-y-2 mb-6 text-center">
           {notification.messages.map((msg, idx) => (
-            <p key={idx} className="text-sm text-muted-foreground leading-relaxed">
+            <p key={idx} className="text-sm text-white/90 leading-relaxed">
               {msg}
             </p>
           ))}
@@ -139,7 +139,7 @@ function ToastNotification({
         {/* Continue/Retry Button */}
         <button
           onClick={onClose}
-          className={`w-full ${buttonColor} text-white font-semibold py-3 px-6 rounded-full transition-all duration-200 shadow-md hover:shadow-lg`}
+          className={`w-full ${buttonColor} text-white font-semibold py-3 px-6 rounded-full transition-all duration-200 shadow-md hover:shadow-lg backdrop-blur-sm`}
         >
           {isError ? "Retry" : "Continue"}
         </button>
@@ -152,6 +152,7 @@ const RAG_API_BASE_URL = import.meta.env.VITE_RAG_API_BASE_URL;
 
 export default function Chat() {
   const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [sidebarKey, setSidebarKey] = useState(0);
   const [uploadingPdf, setUploadingPdf] = useState(false);
   const [uploadingUrl, setUploadingUrl] = useState(false);
   const [showUrlModal, setShowUrlModal] = useState(false);
@@ -326,21 +327,25 @@ export default function Chat() {
       )}
 
       {/* Page header */}
-      <header className="container mx-auto py-10 pt-10 pb-3 flex justify-between items-center">
-        <h1 className="text-2xl font-bold">Chat Support</h1>
+      <header className="container mx-auto py-8 pt-8 pb-4 flex justify-between items-center">
+        <div>
+          <h1 className="text-3xl font-bold tracking-tight text-foreground">Chat Support</h1>
+          <p className="text-sm text-muted-foreground mt-1">AI-powered health assistant</p>
+        </div>
       </header>
 
       {/* Main content - Fixed height container */}
       <main
         className="container mx-auto px-8 py-4"
-        style={{ height: "calc(100vh - 128px)" }}
+        style={{ height: "calc(100vh - 112px)" }}
       >
         <div className="flex gap-9 h-full">
           {/* Sidebar */}
-          <div className="h-full">
+          <div className="h-full shrink-0">
             <ChatSidebar
               currentChatId={currentChatId}
               onSelectChat={setCurrentChatId}
+              refreshKey={sidebarKey}
             />
           </div>
 
@@ -349,6 +354,7 @@ export default function Chat() {
             <ChatWindow
               chatId={currentChatId}
               onNewChat={(id) => setCurrentChatId(id)}
+              onTitleUpdate={() => setSidebarKey(k => k + 1)}
             />
           </div>
         </div>

@@ -1,6 +1,3 @@
-import dotenv from "dotenv";
-dotenv.config();
-
 import express from "express";
 import multer from "multer";
 import { v2 as cloudinary } from "cloudinary";
@@ -19,12 +16,15 @@ function publicIdFromUrl(url) {
 
 const router = express.Router();
 
-// Configure Cloudinary
-cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
-});
+// Configure Cloudinary lazily so env vars are read at request time,
+// not at module load time (ES module imports execute before dotenv.config()).
+function configureCloudinary() {
+  cloudinary.config({
+    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+    api_key: process.env.CLOUDINARY_API_KEY,
+    api_secret: process.env.CLOUDINARY_API_SECRET,
+  });
+}
 
 // Configure multer for memory storage
 const upload = multer({
@@ -45,6 +45,7 @@ const upload = multer({
 // @desc    Upload image to Cloudinary
 // @access  Private
 router.post("/image", auth, upload.single("image"), async (req, res) => {
+  configureCloudinary();
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No image file provided" });
@@ -87,6 +88,7 @@ router.post(
   auth,
   upload.single("image"),
   async (req, res) => {
+    configureCloudinary();
     try {
       if (!req.file) {
         return res.status(400).json({ error: "No image file provided" });
@@ -110,10 +112,10 @@ router.post(
         publicId: result.public_id,
       });
     } catch (error) {
-      console.error("Profile image upload error:", error);
+      console.error("Profile image upload error:", error.message, error.http_code);
       res
         .status(500)
-        .json({ error: "Server error while uploading profile image" });
+        .json({ error: error.message || "Server error while uploading profile image" });
     }
   }
 );
@@ -122,6 +124,7 @@ router.post(
 // @desc    Delete image from Cloudinary
 // @access  Private — user may only delete assets they own; admins unrestricted
 router.delete("/:publicId", auth, async (req, res) => {
+  configureCloudinary();
   try {
     // publicId may contain slashes (folder/filename) so decode it
     const publicId = decodeURIComponent(req.params.publicId);

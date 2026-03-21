@@ -7,14 +7,12 @@ import numpy as np
 import tensorflow as tf
 import cv2
 
+from contextlib import asynccontextmanager
 from typing import Optional
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, HttpUrl
 from PIL import Image
-
-
-app = FastAPI(title="iCare Model Predict Service")
 
 # Config from env
 MODEL_PATH = os.getenv("ICARE_MODEL_PATH", "model.h5")
@@ -172,15 +170,34 @@ def run_prediction(img_batch, filename=None):
         filename=filename
     )
 
-# Startup Event
-@app.on_event("startup")
-def startup_event():
+# CORS setup — only allow the Node backend to call this service,
+# never the browser directly. Frontend routes through Node.
+ALLOWED_ORIGINS = os.getenv(
+    "PREDICT_ALLOWED_ORIGINS",
+    "http://localhost:3001"  # Node backend in development
+).split(",")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
     try:
         load_model()
         print("Model loaded. Input shape:", INPUT_SHAPE)
     except Exception as e:
         print("Failed to load model:", str(e))
         raise
+    yield
+
+
+app = FastAPI(title="MeddyCare Model Predict Service", lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_credentials=True,
+    allow_methods=["POST", "GET"],
+    allow_headers=["Content-Type", "Authorization"],
+)
 
 # Routes
 @app.post("/predict", response_model=PredictResponse)
@@ -212,21 +229,6 @@ async def upload_and_predict(file: UploadFile = File(...)):
         return run_prediction(img_batch, filename=file.filename)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"File upload/predict failed: {e}")
-
-# CORS setup — only allow the Node backend to call this service,
-# never the browser directly. Frontend routes through Node.
-ALLOWED_ORIGINS = os.getenv(
-    "PREDICT_ALLOWED_ORIGINS",
-    "http://localhost:3001"  # Node backend in development
-).split(",")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
-    allow_methods=["POST", "GET"],
-    allow_headers=["Content-Type", "Authorization"],
-)
 
 if __name__ == "__main__":
     import uvicorn

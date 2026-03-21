@@ -1,6 +1,35 @@
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL;
 const RAG_API_BASE_URL = import.meta.env.VITE_RAG_API_BASE_URL;
-const PREDICT_API_URL = import.meta.env.VITE_PREDICT_API_URL;
+
+
+const REQUEST_TIMEOUT_MS = 30_000; // 30 seconds
+
+// ── Retry configuration for transient errors ────────────────────────────────
+const MAX_TRANSIENT_RETRIES = 2;
+const RETRY_BASE_DELAY_MS = 1_000; // 1s → 2s → 4s (exponential)
+
+/** HTTP status codes that indicate a transient (retryable) server error. */
+const RETRYABLE_STATUS_CODES = new Set([502, 503, 504, 429]);
+
+/** Returns true if this error looks like a transient network failure. */
+function isTransientError(error: unknown): boolean {
+  if (error instanceof TypeError && error.message === "Failed to fetch") return true;
+  if (error instanceof DOMException && error.name === "AbortError") return true;
+  return false;
+}
+
+/** Sleep with exponential backoff: attempt 0 → 1s, 1 → 2s, 2 → 4s */
+function backoffDelay(attempt: number): Promise<void> {
+  const ms = RETRY_BASE_DELAY_MS * Math.pow(2, attempt);
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** Wraps a fetch call with an AbortController timeout. */
+function fetchWithTimeout(url: string, options: RequestInit, timeoutMs = REQUEST_TIMEOUT_MS): Promise<Response> {
+  const controller = new AbortController();
+  const id = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...options, signal: controller.signal }).finally(() => clearTimeout(id));
+}
 
 class ApiService {
   private baseURL: string;
@@ -24,6 +53,12 @@ class ApiService {
     return headers;
   }
 
+  /**
+   * Core request method with:
+   *  - 401 auto-refresh (single retry)
+   *  - 403 "suspended" → force logout
+   *  - Transient error retry with exponential backoff (502, 503, 504, 429, network failures)
+   */
   private async request<T>(
     endpoint: string,
     options: RequestInit = {},
@@ -35,58 +70,157 @@ class ApiService {
       headers: this.getHeaders(options.headers || {}),
     };
 
-    const response = await fetch(url, config);
+    // ── Retry loop for transient errors ──────────────────────────────────
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
+      if (attempt > 0) {
+        await backoffDelay(attempt - 1);
+      }
 
-    // Auto-refresh on 401, but never retry the refresh/login/logout endpoints
-    if (
-      response.status === 401 &&
-      !isRetry &&
-      !endpoint.includes("/auth/refresh") &&
-      !endpoint.includes("/auth/login") &&
-      !endpoint.includes("/auth/logout")
-    ) {
+      let response: Response;
       try {
-        const newToken = await this.refreshToken();
-        const retryConfig: RequestInit = {
-          ...options,
-          headers: {
-            ...(options.headers || {}),
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${newToken}`,
-          },
-        };
-        const retryResponse = await fetch(url, retryConfig);
-        if (!retryResponse.ok) {
-          const errData = await retryResponse.json().catch(() => ({}));
-          throw new Error(errData.error || (Array.isArray(errData.errors) && errData.errors.length > 0 ? errData.errors.map((e: { msg: string }) => e.msg).join(". ") : null) || `HTTP error! status: ${retryResponse.status}`);
+        response = await fetchWithTimeout(url, config);
+      } catch (fetchErr) {
+        // Network error / timeout — retry if transient
+        if (isTransientError(fetchErr) && attempt < MAX_TRANSIENT_RETRIES) {
+          lastError = fetchErr instanceof Error ? fetchErr : new Error(String(fetchErr));
+          continue;
         }
-        return retryResponse.json();
-      } catch {
-        window.dispatchEvent(new CustomEvent("auth-expired"));
-        throw new Error("Session expired. Please log in again.");
+        throw fetchErr;
       }
+
+      // ── Transient server errors → retry ──────────────────────────────
+      if (RETRYABLE_STATUS_CODES.has(response.status) && attempt < MAX_TRANSIENT_RETRIES) {
+        lastError = new Error(`HTTP ${response.status}`);
+        continue;
+      }
+
+      // ── Auto-refresh on 401, but never retry the refresh/login/logout endpoints
+      if (
+        response.status === 401 &&
+        !isRetry &&
+        !endpoint.includes("/auth/refresh") &&
+        !endpoint.includes("/auth/login") &&
+        !endpoint.includes("/auth/logout")
+      ) {
+        try {
+          const newToken = await this.refreshToken();
+          const retryConfig: RequestInit = {
+            ...options,
+            headers: {
+              ...(options.headers || {}),
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${newToken}`,
+            },
+          };
+          const retryResponse = await fetchWithTimeout(url, retryConfig);
+          if (!retryResponse.ok) {
+            const errData = await retryResponse.json().catch(() => ({}));
+            throw new Error(errData.error || (Array.isArray(errData.errors) && errData.errors.length > 0 ? errData.errors.map((e: { msg: string }) => e.msg).join(". ") : null) || `HTTP error! status: ${retryResponse.status}`);
+          }
+          return retryResponse.json();
+        } catch {
+          window.dispatchEvent(new CustomEvent("auth-expired"));
+          throw new Error("Session expired. Please log in again.");
+        }
+      }
+
+      // 403 with "suspended" message → force logout immediately
+      if (response.status === 403) {
+        const errorData = await response.json().catch(() => ({}));
+        if (typeof errorData.error === "string" && errorData.error.toLowerCase().includes("suspended")) {
+          window.dispatchEvent(new CustomEvent("auth-expired"));
+          throw new Error(errorData.error);
+        }
+      }
+
+      if (!response.ok) {
+        const errorData = await response.json().catch(() => ({}));
+        const message =
+          errorData.error ||
+          (Array.isArray(errorData.errors) && errorData.errors.length > 0
+            ? errorData.errors.map((e: { msg: string }) => e.msg).join(". ")
+            : null) ||
+          `HTTP error! status: ${response.status}`;
+        throw new Error(message);
+      }
+      return response.json();
     }
 
-    // 403 with "suspended" message → force logout immediately
-    if (response.status === 403) {
-      const errorData = await response.json().catch(() => ({}));
-      if (typeof errorData.error === "string" && errorData.error.toLowerCase().includes("suspended")) {
-        window.dispatchEvent(new CustomEvent("auth-expired"));
-        throw new Error(errorData.error);
+    // All retries exhausted
+    throw lastError || new Error("Request failed after retries");
+  }
+
+  /**
+   * Shared request helper for the RAG service — same retry + 401/token-refresh logic.
+   */
+  private async ragRequest<T>(
+    endpoint: string,
+    options: RequestInit = {},
+    isRetry = false
+  ): Promise<T> {
+    const url = `${RAG_API_BASE_URL}${endpoint}`;
+    const config: RequestInit = {
+      ...options,
+      headers: this.getHeaders(options.headers || {}),
+    };
+
+    // ── Retry loop for transient errors ──────────────────────────────────
+    let lastError: Error | null = null;
+    for (let attempt = 0; attempt <= MAX_TRANSIENT_RETRIES; attempt++) {
+      if (attempt > 0) {
+        await backoffDelay(attempt - 1);
       }
+
+      let response: Response;
+      try {
+        response = await fetchWithTimeout(url, config);
+      } catch (fetchErr) {
+        if (isTransientError(fetchErr) && attempt < MAX_TRANSIENT_RETRIES) {
+          lastError = fetchErr instanceof Error ? fetchErr : new Error(String(fetchErr));
+          continue;
+        }
+        throw fetchErr;
+      }
+
+      // ── Transient server errors → retry ──────────────────────────────
+      if (RETRYABLE_STATUS_CODES.has(response.status) && attempt < MAX_TRANSIENT_RETRIES) {
+        lastError = new Error(`HTTP ${response.status}`);
+        continue;
+      }
+
+      if (response.status === 401 && !isRetry) {
+        try {
+          const newToken = await this.refreshToken();
+          const retryConfig: RequestInit = {
+            ...options,
+            headers: {
+              ...(options.headers || {}),
+              "Content-Type": "application/json",
+              Authorization: `Bearer ${newToken}`,
+            },
+          };
+          const retryResponse = await fetchWithTimeout(url, retryConfig);
+          if (!retryResponse.ok) {
+            const errData = await retryResponse.json().catch(() => ({}));
+            throw new Error(errData.detail || errData.error || `RAG error: ${retryResponse.status}`);
+          }
+          return retryResponse.json();
+        } catch {
+          window.dispatchEvent(new CustomEvent("auth-expired"));
+          throw new Error("Session expired. Please log in again.");
+        }
+      }
+
+      if (!response.ok) {
+        const errData = await response.json().catch(() => ({}));
+        throw new Error(errData.detail || errData.error || `RAG error: ${response.status}`);
+      }
+      return response.json();
     }
 
-    if (!response.ok) {
-      const errorData = await response.json().catch(() => ({}));
-      const message =
-        errorData.error ||
-        (Array.isArray(errorData.errors) && errorData.errors.length > 0
-          ? errorData.errors.map((e: { msg: string }) => e.msg).join(". ")
-          : null) ||
-        `HTTP error! status: ${response.status}`;
-      throw new Error(message);
-    }
-    return response.json();
+    // All retries exhausted
+    throw lastError || new Error("RAG request failed after retries");
   }
 
   // Deduplicated token refresh — concurrent callers share the same promise
@@ -288,6 +422,19 @@ class ApiService {
     });
   }
 
+  async getDoctorAnalytics() {
+    return await this.request<{
+      consultations: { total: number; pending: number; in_review: number; completed: number; cancelled: number };
+      consultationsOverTime: { date: string; count: number }[];
+      rating: { average: number; count: number; distribution: { star: number; count: number }[] };
+      patientRiskTiers: { stage: number; label: string; count: number }[];
+    }>('/doctors/analytics');
+  }
+
+  async getDoctorSlots(doctorId: string, date: string) {
+    return await this.request<{ slots: string[]; available: boolean }>(`/doctors/${doctorId}/slots?date=${date}`);
+  }
+
   async addDoctorReview(
     doctorId: string,
     review: { rating: number; comment?: string }
@@ -445,56 +592,18 @@ class ApiService {
   // RAG Chat methods
 
   async ragSendMessage(message: string, chatId?: string) {
-    const ragUrl = RAG_API_BASE_URL;
-    const clientTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-
-    const response = await fetch(`${ragUrl}/chat`, {
+    return this.ragRequest<any>("/chat", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${
-          this.token || localStorage.getItem("token") || ""
-        }`,
-      },
-      body: JSON.stringify({
-        message,
-        chat_id: chatId,
-        top_k: 5,
-        timezone: clientTimezone,
-      }),
+      body: JSON.stringify({ message, chat_id: chatId, top_k: 5 }),
     });
-
-    if (!response.ok) throw new Error(`RAG chat failed: ${response.status}`);
-    return response.json();
   }
 
   async ragGetChats() {
-    const ragUrl = RAG_API_BASE_URL;
-    const response = await fetch(`${ragUrl}/chats`, {
-      headers: {
-        Authorization: `Bearer ${
-          this.token || localStorage.getItem("token") || ""
-        }`,
-      },
-    });
-
-    if (!response.ok) throw new Error(`Get chats failed: ${response.status}`);
-    return response.json();
+    return this.ragRequest<any>("/chats");
   }
 
   async ragGetMessages(chatId: string) {
-    const ragUrl = RAG_API_BASE_URL;
-    const response = await fetch(`${ragUrl}/chats/${chatId}/messages`, {
-      headers: {
-        Authorization: `Bearer ${
-          this.token || localStorage.getItem("token") || ""
-        }`,
-      },
-    });
-
-    if (!response.ok)
-      throw new Error(`Get messages failed: ${response.status}`);
-    return response.json();
+    return this.ragRequest<any>(`/chats/${encodeURIComponent(chatId)}/messages`);
   }
 
   // Consultation methods
@@ -576,9 +685,13 @@ class ApiService {
     });
   }
 
-  async getAdminDoctors(search?: string) {
-    const qs = search ? `?search=${encodeURIComponent(search)}` : '';
-    return await this.request<any>(`/admin/doctors${qs}`);
+  async getAdminDoctors(params: { search?: string; page?: number; limit?: number } = {}) {
+    const qs = new URLSearchParams();
+    if (params.search) qs.append('search', params.search);
+    if (params.page) qs.append('page', params.page.toString());
+    if (params.limit) qs.append('limit', params.limit.toString());
+    const query = qs.toString();
+    return await this.request<any>(`/admin/doctors${query ? `?${query}` : ''}`);
   }
 
   async verifyDoctor(id: string, isVerified: boolean) {
@@ -601,85 +714,28 @@ class ApiService {
     return await this.request<any>(`/admin/audit-logs?${qs}`);
   }
 
-  // --- Added rag chat helpers ---
+  // --- RAG chat management helpers ---
 
   async ragDeleteChat(chatId: string) {
-    const ragUrl = RAG_API_BASE_URL;
-    const response = await fetch(
-      `${ragUrl}/chats/${encodeURIComponent(chatId)}`,
-      {
-        method: "DELETE",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${
-            this.token || localStorage.getItem("token") || ""
-          }`,
-        },
-      }
-    );
-
-    if (!response.ok) throw new Error(`Delete chat failed: ${response.status}`);
-    return response.json();
+    return this.ragRequest<any>(`/chats/${encodeURIComponent(chatId)}`, { method: "DELETE" });
   }
 
   async ragRenameChat(chatId: string, newTitle: string) {
-    const ragUrl = RAG_API_BASE_URL;
-    const response = await fetch(
-      `${ragUrl}/chats/${encodeURIComponent(chatId)}`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${
-            this.token || localStorage.getItem("token") || ""
-          }`,
-        },
-        body: JSON.stringify({ title: newTitle }),
-      }
-    );
-
-    if (!response.ok) throw new Error(`Rename chat failed: ${response.status}`);
-    return response.json();
+    return this.ragRequest<any>(`/chats/${encodeURIComponent(chatId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title: newTitle }),
+    });
   }
 
   async ragArchiveChat(chatId: string, archived = true) {
-    const ragUrl = RAG_API_BASE_URL;
-    const response = await fetch(
-      `${ragUrl}/chats/${encodeURIComponent(chatId)}`,
-      {
-        method: "PATCH",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${
-            this.token || localStorage.getItem("token") || ""
-          }`,
-        },
-        body: JSON.stringify({ archived }),
-      }
-    );
-
-    if (!response.ok)
-      throw new Error(`Archive toggle failed: ${response.status}`);
-    return response.json();
+    return this.ragRequest<any>(`/chats/${encodeURIComponent(chatId)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ archived }),
+    });
   }
 
   async ragShareChat(chatId: string) {
-    const ragUrl = RAG_API_BASE_URL;
-    const response = await fetch(
-      `${ragUrl}/chats/${encodeURIComponent(chatId)}/share`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          Authorization: `Bearer ${
-            this.token || localStorage.getItem("token") || ""
-          }`,
-        },
-      }
-    );
-
-    if (!response.ok) throw new Error(`Share chat failed: ${response.status}`);
-    return response.json();
+    return this.ragRequest<any>(`/chats/${encodeURIComponent(chatId)}/share`, { method: "POST" });
   }
 }
 

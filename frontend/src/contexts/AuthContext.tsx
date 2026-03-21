@@ -14,7 +14,7 @@ interface User {
 
 interface AuthContextType {
   user: User | null;
-  token: string | null; // Add this line
+  token: string | null;
   loading: boolean;
   login: (email: string, password: string, role?: string) => Promise<any>;
   register: (userData: any) => Promise<any>;
@@ -38,7 +38,7 @@ interface AuthProviderProps {
 
 export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const [user, setUser] = useState<User | null>(null);
-  const [token, setToken] = useState<string | null>(null); // Add this line
+  const [token, setToken] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const logoutRef = useRef<() => Promise<void>>(async () => {});
   const { socket } = useSocket();
@@ -80,20 +80,18 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
         if (savedToken && savedUser) {
           apiService.setToken(savedToken);
-          setToken(savedToken); // Add this line
+          setToken(savedToken);
           setUser(JSON.parse(savedUser));
 
           // Verify token is still valid
           try {
             const { user: currentUser } = await apiService.getCurrentUser();
             setUser(currentUser);
-          } catch (error) {
-            console.error("Token validation failed:", error);
+          } catch {
             await logout();
           }
         }
-      } catch (error) {
-        console.error("Auth initialization error:", error);
+      } catch {
         await logout();
       } finally {
         setLoading(false);
@@ -110,7 +108,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setToken(response.token || localStorage.getItem("token"));
       return response;
     } catch (error) {
-      console.error("Login error:", error);
       throw error;
     }
   };
@@ -122,7 +119,6 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
       setToken(response.token || localStorage.getItem("token"));
       return response;
     } catch (error) {
-      console.error("Registration error:", error);
       throw error;
     }
   };
@@ -130,11 +126,11 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const logout = async () => {
     try {
       await apiService.logout();
-    } catch (error) {
-      console.error("Logout error:", error);
+    } catch {
+      // logout is best-effort
     } finally {
       setUser(null);
-      setToken(null); // Add this line
+      setToken(null);
     }
   };
   logoutRef.current = logout;
@@ -146,7 +142,7 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
 
   const value: AuthContextType = {
     user,
-    token, // Add this line
+    token,
     loading,
     login,
     register,

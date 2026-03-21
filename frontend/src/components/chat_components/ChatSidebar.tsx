@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef } from "react";
+import { useAuth } from "@/contexts/AuthContext";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -20,12 +21,15 @@ import {
   X,
   Clock,
   MessageSquare,
+  Search,
 } from "lucide-react";
 import apiService from "@/lib/api";
+import ProfileModal from "@/components/ProfileModal";
 
 interface ChatSidebarProps {
   currentChatId: string | null;
   onSelectChat: (chatId: string | null) => void;
+  refreshKey?: number;  // increment to force a chat list reload (e.g. after auto-title)
 }
 
 interface ChatItem {
@@ -62,22 +66,22 @@ function CustomModal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/50"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm"
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4"
+        className="bg-card border border-border rounded-2xl shadow-2xl max-w-md w-full mx-4"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="p-6">
-          <h2 className="text-xl font-semibold mb-3">{title}</h2>
-          <p className="text-gray-600 mb-6">{message}</p>
+          <h2 className="text-xl font-semibold text-foreground mb-2">{title}</h2>
+          <p className="text-muted-foreground mb-6">{message}</p>
 
           <div className="flex gap-3 justify-end">
             {cancelText && (
               <button
                 onClick={onClose}
-                className="px-4 py-2 rounded-md border border-gray-300 hover:bg-gray-50 transition-colors"
+                className="px-4 py-2 rounded-xl border border-border text-foreground hover:bg-muted transition-colors text-sm font-medium"
               >
                 {cancelText}
               </button>
@@ -89,10 +93,10 @@ function CustomModal({
                   onClose();
                 }}
                 className={cn(
-                  "px-4 py-2 rounded-md text-white transition-colors",
+                  "px-4 py-2 rounded-xl text-white transition-colors text-sm font-medium",
                   type === "danger"
                     ? "bg-red-600 hover:bg-red-700"
-                    : "bg-teal-600 hover:bg-teal-700"
+                    : "bg-primary hover:bg-primary/90"
                 )}
               >
                 {confirmText}
@@ -101,7 +105,7 @@ function CustomModal({
             {!confirmText && (
               <button
                 onClick={onClose}
-                className="px-4 py-2 rounded-md bg-teal-600 hover:bg-teal-700 text-white transition-colors"
+                className="px-4 py-2 rounded-xl bg-primary hover:bg-primary/90 text-primary-foreground transition-colors text-sm font-medium"
               >
                 OK
               </button>
@@ -113,9 +117,12 @@ function CustomModal({
   );
 }
 
+// ── Component ──────────────────────────────────────────────────────────────────
+
 export default function ChatSidebar({
   currentChatId,
   onSelectChat,
+  refreshKey,
 }: ChatSidebarProps) {
   const [chats, setChats] = useState<ChatItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -126,6 +133,16 @@ export default function ChatSidebar({
   const [archivedChats, setArchivedChats] = useState<ChatItem[]>([]);
   const [historyOverlayOpen, setHistoryOverlayOpen] = useState(false);
   const mountedRef = useRef(true);
+
+  const [showProfileModal, setShowProfileModal] = useState(false);
+
+  const { user } = useAuth();
+  const storedProfileImage = user?.profileImage ?? null;
+
+  const [search, setSearch] = useState("");
+  const filteredChats = search
+    ? chats.filter(c => (c.title ?? "Chat").toLowerCase().includes(search.toLowerCase()))
+    : chats;
 
   // Modal states
   const [modalState, setModalState] = useState<{
@@ -157,7 +174,13 @@ export default function ChatSidebar({
 
   const formatLocalTime = (utcTimestamp: string) => {
     if (!utcTimestamp) return "";
-    const date = new Date(utcTimestamp);
+    // MongoDB returns timestamps without timezone suffix (e.g. "2026-03-19T17:05:00").
+    // Without a "Z", JavaScript treats it as local time instead of UTC → wrong time shown.
+    // Appending "Z" forces UTC interpretation so toLocaleString converts to local time correctly.
+    const normalized = /[Zz]|[+-]\d{2}:\d{2}$/.test(utcTimestamp)
+      ? utcTimestamp
+      : utcTimestamp + "Z";
+    const date = new Date(normalized);
     return date.toLocaleString(undefined, {
       year: "numeric",
       month: "short",
@@ -187,9 +210,25 @@ export default function ChatSidebar({
     }
   }
 
+  // Re-fetch when parent signals a title update (e.g. after auto-title is saved)
+  useEffect(() => {
+    if (refreshKey !== undefined && refreshKey > 0) loadChats();
+  }, [refreshKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load chats on mount and whenever a new chat is created (null → real ID).
+  // Switching between existing chats does NOT re-fetch the list.
+  const prevChatIdRef = useRef<string | null | undefined>(undefined);
   useEffect(() => {
     mountedRef.current = true;
-    loadChats();
+    const prev = prevChatIdRef.current;
+    prevChatIdRef.current = currentChatId;
+
+    const isInitialMount  = prev === undefined;
+    const isNewChatAdded  = prev === null && currentChatId !== null;
+
+    if (isInitialMount || isNewChatAdded) {
+      loadChats();
+    }
     return () => {
       mountedRef.current = false;
     };
@@ -395,13 +434,7 @@ export default function ChatSidebar({
   };
 
   const handleProfileClick = () => {
-    setModalState({
-      isOpen: true,
-      title: "Profile Settings",
-      message:
-        "Your profile settings will be available soon. Stay tuned for personalized features and account management options!",
-      type: "info",
-    });
+    setShowProfileModal(true);
   };
 
   const renderChatRow = (chat: ChatItem, isArchived = false) => {
@@ -412,21 +445,21 @@ export default function ChatSidebar({
       <div
         key={key}
         className={cn(
-          "flex items-center justify-between group rounded-md px-2 py-1",
-          isSelected ? "bg-accent" : "hover:bg-accent/60",
-          "cursor-pointer"
+          "group rounded-lg px-2 py-1",
+          isSelected ? "bg-accent border border-border/40" : "hover:bg-accent/50",
+          "cursor-pointer transition-colors"
         )}
         onClick={() => {
           onSelectChat(chat._id);
           setHistoryOverlayOpen(false);
         }}
       >
-        <div className="flex flex-col flex-1 min-w-0">
+        <div className="min-w-0">
           {editingChatId === chat._id ? (
             <div className="flex gap-1 items-center w-full">
               <div className="flex-1 relative">
                 <input
-                  className="w-full rounded-md border px-2 py-1 text-sm bg-white"
+                  className="w-full rounded-lg border border-border px-2 py-1 text-sm bg-background text-foreground"
                   value={editValue}
                   onChange={(e) => setEditValue(e.target.value)}
                   onClick={(e) => e.stopPropagation()}
@@ -446,7 +479,7 @@ export default function ChatSidebar({
                     (e.target as HTMLInputElement).setSelectionRange(len, len);
                   }}
                 />
-                <div className="absolute -bottom-4 left-0 text-xs text-gray-500">
+                <div className="absolute -bottom-4 left-0 text-xs text-muted-foreground">
                   {
                     editValue
                       .trim()
@@ -458,7 +491,7 @@ export default function ChatSidebar({
               </div>
               <div className="flex gap-1 shrink-0 ml-1">
                 <button
-                  className="p-1 rounded-md hover:bg-gray-100 bg-green-50"
+                  className="p-1 rounded-md hover:bg-green-100 dark:hover:bg-green-900/30 bg-green-50 dark:bg-green-900/20"
                   onClick={(e) => {
                     e.stopPropagation();
                     saveRename(chat._id);
@@ -468,7 +501,7 @@ export default function ChatSidebar({
                   <Check className="w-3 h-3 text-green-600" />
                 </button>
                 <button
-                  className="p-1 rounded-md hover:bg-gray-100 bg-red-50"
+                  className="p-1 rounded-md hover:bg-red-100 dark:hover:bg-red-900/30 bg-red-50 dark:bg-red-900/20"
                   onClick={(e) => {
                     e.stopPropagation();
                     cancelRename();
@@ -480,85 +513,42 @@ export default function ChatSidebar({
               </div>
             </div>
           ) : (
-            <>
-              <span className="text-sm font-medium truncate">
-                {chat.title ?? "Chat"}
-              </span>
-              <span className="text-xs text-muted-foreground">
-                {formatLocalTime(chat.created_at)}
-              </span>
-            </>
+            <div className="grid items-center gap-1" style={{ gridTemplateColumns: "1fr 28px" }}>
+              <div className="overflow-hidden">
+                <p className="text-xs font-medium truncate leading-tight">
+                  {chat.title ?? "Chat"}
+                </p>
+                <p className="text-[10px] text-muted-foreground truncate leading-tight">
+                  {formatLocalTime(chat.updated_at ?? chat.created_at)}
+                </p>
+              </div>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button
+                    className="w-7 h-7 flex items-center justify-center rounded-md text-foreground hover:bg-muted/80 transition-colors"
+                    onClick={(e) => e.stopPropagation()}
+                  >
+                    <MoreVertical className="h-4 w-4" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent side="right" align="start" className="z-[60]">
+                  <DropdownMenuItem onClick={() => handleShare(chat._id)}>
+                    <Share2 className="mr-2 h-4 w-4" /> Share
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => startRename(chat)}>
+                    <Edit2 className="mr-2 h-4 w-4" /> Rename
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => handleArchiveToggle(chat._id, !isArchived)}>
+                    <Archive className="mr-2 h-4 w-4" /> {isArchived ? "Unarchive" : "Archive"}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem className="text-red-600" onClick={() => handleDelete(chat._id)}>
+                    <Trash2 className="mr-2 h-4 w-4" /> Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
           )}
         </div>
-
-        {editingChatId !== chat._id && (
-          <div className="ml-2 flex items-center">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="opacity-0 group-hover:opacity-100 transition-opacity h-6 w-6"
-                  onClick={(e) => e.stopPropagation()}
-                  aria-label="Chat actions"
-                >
-                  <MoreVertical className="h-3 w-3" />
-                </Button>
-              </DropdownMenuTrigger>
-
-              <DropdownMenuContent side="right" align="start">
-                <DropdownMenuItem asChild>
-                  <button
-                    className="w-full text-left px-2 py-1 hover:bg-accent"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleShare(chat._id);
-                    }}
-                  >
-                    <Share2 className="mr-2 inline-block w-4 h-4" /> Share
-                  </button>
-                </DropdownMenuItem>
-
-                <DropdownMenuItem asChild>
-                  <button
-                    className="w-full text-left px-2 py-1 hover:bg-accent"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      startRename(chat);
-                    }}
-                  >
-                    <Edit2 className="mr-2 inline-block w-4 h-4" /> Rename
-                  </button>
-                </DropdownMenuItem>
-
-                <DropdownMenuItem asChild>
-                  <button
-                    className="w-full text-left px-2 py-1 hover:bg-accent"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleArchiveToggle(chat._id, !isArchived);
-                    }}
-                  >
-                    <Archive className="mr-2 inline-block w-4 h-4" />
-                    {isArchived ? "Unarchive" : "Archive"}
-                  </button>
-                </DropdownMenuItem>
-
-                <DropdownMenuItem asChild>
-                  <button
-                    className="w-full text-left px-2 py-1 text-red-600 hover:bg-red-400"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleDelete(chat._id);
-                    }}
-                  >
-                    <Trash2 className="mr-2 inline-block w-4 h-4" /> Delete
-                  </button>
-                </DropdownMenuItem>
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        )}
       </div>
     );
   };
@@ -567,19 +557,26 @@ export default function ChatSidebar({
 
   return (
     <>
+      <ProfileModal
+        isOpen={showProfileModal}
+        onClose={() => setShowProfileModal(false)}
+        totalChats={chats.length + archivedChats.length}
+        archivedCount={archivedChats.length}
+      />
+
       <div
         className={cn(
-          "flex flex-col border-r h-full transition-all duration-300 bg-white relative rounded-lg shadow-sm min-h-0",
+          "flex flex-col border-r border-border/60 h-full transition-all duration-300 bg-card relative rounded-xl shadow-md min-h-0",
           isOpen ? "w-64" : "w-14"
         )}
       >
-        <div className="flex items-center justify-between p-2 border-b">
+        <div className="flex items-center justify-between p-2 border-b border-border/50">
           <div className="flex items-center gap-2">
             <div
               onClick={() => setIsOpen((s) => !s)}
               title={collapseButtonTitle}
               className={cn(
-                "rounded-md p-1 py-2 hover:bg-gray-100 flex items-center justify-center select-none cursor-pointer"
+                "rounded-lg p-1 py-2 hover:bg-muted flex items-center justify-center select-none cursor-pointer transition-colors"
               )}
             >
               <img
@@ -591,7 +588,7 @@ export default function ChatSidebar({
 
             {isOpen && (
               <div className="flex flex-col">
-                <span className="font-bold text-base select-none">MeddyCare</span>
+                <span className="font-bold text-base select-none tracking-tight">MeddyCare</span>
                 <span className="text-xs text-muted-foreground select-none">
                   Eye health assistant
                 </span>
@@ -603,21 +600,30 @@ export default function ChatSidebar({
         <div className="flex-1 overflow-hidden flex flex-col">
           {isOpen ? (
             <>
-              <div className="p-2 border-b">
+              <div className="p-2 border-b space-y-1.5">
                 <Button
                   onClick={handleNewChat}
-                  className="w-full justify-start bg-teal-600 hover:bg-teal-700 text-white"
+                  className="w-full justify-start bg-primary hover:bg-primary/90 text-primary-foreground rounded-lg"
                   size="sm"
                 >
                   <Plus className="h-3 w-3 mr-2" />
                   New Chat
                 </Button>
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground pointer-events-none" />
+                  <input
+                    className="w-full rounded-lg border border-input bg-background pl-8 pr-3 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+                    placeholder="Search chats…"
+                    value={search}
+                    onChange={e => setSearch(e.target.value)}
+                  />
+                </div>
               </div>
 
               <ScrollArea className="flex-1">
-                <div className="space-y-1 p-1">
+                <div className="space-y-1 px-2 py-1">
                   <div className="px-2 py-1 mt-1">
-                    <span className="text-xs font-semibold text-gray-600 uppercase tracking-wide">
+                    <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                       Recents
                     </span>
                   </div>
@@ -627,10 +633,10 @@ export default function ChatSidebar({
                       Loading chats...
                     </p>
                   )}
-                  {chats.map((chat) => renderChatRow(chat, false))}
-                  {!loading && chats.length === 0 && (
+                  {filteredChats.map((chat) => renderChatRow(chat, false))}
+                  {!loading && filteredChats.length === 0 && (
                     <p className="text-sm text-muted-foreground px-2">
-                      No chats yet.
+                      {search ? "No chats match your search." : "No chats yet."}
                     </p>
                   )}
                   <div className="mt-2 p-1 py-4">
@@ -668,7 +674,7 @@ export default function ChatSidebar({
             <div className="flex flex-col items-center py-3 space-y-3">
               <button
                 title="New chat"
-                className="p-2 rounded-md bg-teal-600 hover:bg-teal-700 transition-colors text-white"
+                className="p-2 rounded-lg bg-primary hover:bg-primary/90 transition-colors text-primary-foreground"
                 onClick={(e) => {
                   e.stopPropagation();
                   handleNewChat();
@@ -679,7 +685,7 @@ export default function ChatSidebar({
 
               <button
                 title="Recent"
-                className="p-2 rounded-md hover:bg-gray-100 transition-colors"
+                className="p-2 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
                 onClick={(e) => {
                   e.stopPropagation();
                   if (chats.length > 0) onSelectChat(chats[0]._id);
@@ -690,7 +696,7 @@ export default function ChatSidebar({
 
               <button
                 title="History"
-                className="p-2 rounded-md hover:bg-gray-100 transition-colors"
+                className="p-2 rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
                 onClick={(e) => {
                   e.stopPropagation();
                   setHistoryOverlayOpen((s) => !s);
@@ -702,26 +708,32 @@ export default function ChatSidebar({
           )}
         </div>
 
-        <div className="p-2 border-t mt-auto">
+        <div className="p-2 border-t border-border/50 mt-auto">
           {isOpen ? (
             <Button
               variant="ghost"
-              className="w-full justify-start px-12"
+              className="w-full justify-start px-12 hover:bg-muted rounded-lg"
               onClick={handleProfileClick}
             >
-              <div className="h-9 w-9 mr-2 rounded-full bg-gray-200 flex items-center justify-center p-2 py-2">
-                <User className="h-5 w-5 text-gray-600" />
+              <div className="h-9 w-9 mr-2 rounded-full bg-muted border border-border flex items-center justify-center overflow-hidden shrink-0">
+                {storedProfileImage
+                  ? <img src={storedProfileImage} alt="avatar" className="w-full h-full object-cover" />
+                  : <User className="h-5 w-5 text-muted-foreground" />
+                }
               </div>
-              Profile
+              <span className="text-sm font-medium text-foreground">Profile</span>
             </Button>
           ) : (
             <div className="flex justify-center">
               <button
                 onClick={handleProfileClick}
                 title="Profile"
-                className="p-2 rounded-full bg-gray-200 hover:bg-gray-300 transition-colors py-2"
+                className="rounded-full bg-muted hover:bg-muted/80 border border-border transition-colors overflow-hidden h-9 w-9 flex items-center justify-center"
               >
-                <User className="h-5 w-5 text-gray-600" />
+                {storedProfileImage
+                  ? <img src={storedProfileImage} alt="avatar" className="w-full h-full object-cover" />
+                  : <User className="h-5 w-5 text-muted-foreground" />
+                }
               </button>
             </div>
           )}
@@ -730,21 +742,21 @@ export default function ChatSidebar({
 
       {historyOverlayOpen && !isOpen && (
         <div
-          className="fixed left-14 top-16 z-50 w-80 max-h-[70vh] bg-white shadow-lg rounded-md overflow-hidden border"
+          className="fixed left-16 top-20 z-50 w-80 max-h-[70vh] bg-card border border-border shadow-xl rounded-xl overflow-hidden"
           role="dialog"
           aria-modal="true"
         >
-          <div className="flex items-center justify-between px-3 py-2 border-b">
+          <div className="flex items-center justify-between px-3 py-2.5 border-b border-border/60">
             <div className="flex items-center gap-2">
-              <MessageSquare className="h-4 w-4" />
-              <span className="font-medium">History</span>
+              <MessageSquare className="h-4 w-4 text-primary" />
+              <span className="font-semibold text-sm text-foreground">History</span>
             </div>
             <button
-              className="p-1 rounded hover:bg-gray-100"
+              className="p-1 rounded-lg hover:bg-muted transition-colors"
               onClick={() => setHistoryOverlayOpen(false)}
               aria-label="Close history"
             >
-              <X className="w-4 h-4" />
+              <X className="w-4 h-4 text-muted-foreground" />
             </button>
           </div>
 
@@ -774,7 +786,7 @@ export default function ChatSidebar({
                   </div>
                   <button
                     title="Delete"
-                    className="p-1 rounded hover:bg-gray-100"
+                    className="p-1 rounded-lg hover:bg-muted transition-colors"
                     onClick={(e) => {
                       e.stopPropagation();
                       handleDelete(c._id);

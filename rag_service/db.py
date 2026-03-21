@@ -1,71 +1,79 @@
 # rag_service/db.py
-import os
+import logging
+
 import certifi
-from dotenv import load_dotenv
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import IndexModel, ASCENDING
+from pymongo import ASCENDING
 
-# Load .env so environment variables are available when module is imported
-load_dotenv()
+from config import MONGODB_DB, MONGODB_URI
 
-# Config
-MONGO_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
-MONGO_DB = os.getenv("MONGODB_DB", "icare")  # default DB name
+logger = logging.getLogger(__name__)
 
-# Create client with certifi CA bundle to fix macOS SSL certificate verification
-client = AsyncIOMotorClient(MONGO_URI, tlsCAFile=certifi.where())
-db = client[MONGO_DB]
+client = AsyncIOMotorClient(
+    MONGODB_URI,
+    tlsCAFile=certifi.where(),
+    serverSelectionTimeoutMS=5_000,
+    connectTimeoutMS=5_000,
+    socketTimeoutMS=30_000,
+    maxPoolSize=20,
+)
+db = client[MONGODB_DB]
 
-# Collections used by the app
+# Collections
 users_col = db["users"]
 reports_col = db["reports"]
-chats_col = db["chats"]            # conversation threads metadata (one per chat)
-messages_col = db["messages"]      # individual chat messages (user/bot)
-documents_col = db["rag_documents"]  # uploaded docs/papers for RAG index
-uploads_col = db["uploads"]        # uploaded retina images metadata, etc.
+chats_col = db["chats"]
+messages_col = db["messages"]
+documents_col = db["rag_documents"]
+uploads_col = db["uploads"]
 
 
-default_indexes = [
-    IndexModel([("email", ASCENDING)], name="users_email_idx", unique=True),
-    IndexModel([("user_id", ASCENDING)], name="messages_user_idx"),
-    IndexModel([("chat_id", ASCENDING)], name="messages_chat_idx"),
-    IndexModel([("created_at", ASCENDING)], name="created_at_idx")
-]
-
-async def create_indexes():
-    """Create configured indexes (call this from startup event if you want)."""
+async def create_indexes() -> None:
+    """Create all required indexes. Called once at app startup."""
     try:
-        # Create each index on its collection if appropriate
-        await users_col.create_indexes([default_indexes[0]])
-        # messages, chats, documents - create useful indexes
-        await messages_col.create_indexes([default_indexes[1], default_indexes[2]])
-        await chats_col.create_indexes([default_indexes[3]])
-        # documents basic index (e.g. filename)
-        await documents_col.create_index([("filename", ASCENDING)], name="doc_filename_idx")
-    except Exception as e:
-        # do not crash on index errors; log externally if desired
-        print("create_indexes() error:", str(e))
+        await users_col.create_index(
+            [("email", ASCENDING)], unique=True, name="users_email_uidx"
+        )
+        await chats_col.create_index(
+            [("user_id", ASCENDING), ("updated_at", ASCENDING)],
+            name="chats_user_updated_idx",
+        )
+        await messages_col.create_index(
+            [("chat_id", ASCENDING), ("timestamp", ASCENDING)],
+            name="messages_chat_ts_idx",
+        )
+        await messages_col.create_index(
+            [("user_id", ASCENDING)], name="messages_user_idx"
+        )
+        await documents_col.create_index(
+            [("added_at", ASCENDING)], name="docs_added_idx"
+        )
+        await documents_col.create_index(
+            [("content_hash", ASCENDING)], unique=True, sparse=True,
+            name="docs_content_hash_uidx",
+        )
+        # TTL index: MongoDB auto-deletes expired share documents
+        await db["shared_chats"].create_index(
+            "expires_at",
+            expireAfterSeconds=0,
+            name="shared_chats_ttl_idx",
+        )
+    except Exception as exc:
+        logger.warning("Index creation warning (non-fatal): %s", exc)
 
 
-async def delete_chat_and_messages(chat_id: str, user_id: str, is_admin: bool = False) -> bool:
+async def delete_chat_and_messages(
+    chat_id: str, user_id: str, is_admin: bool = False
+) -> bool:
     """
-    Delete a chat (from chats_col) and all its messages (from messages_col).
-    Returns True if a chat was deleted, False otherwise.
+    Delete a chat and all its messages.
+    Returns True if a chat was deleted, False if not found or access denied.
     """
-    # Find the chat
     chat = await chats_col.find_one({"_id": chat_id})
     if not chat:
         return False
-
-    # Authorization: only owner or admin can delete
     if chat.get("user_id") != user_id and not is_admin:
         return False
-
-    # Delete messages
     await messages_col.delete_many({"chat_id": chat_id})
-
-    # Delete chat metadata
     result = await chats_col.delete_one({"_id": chat_id})
-
     return result.deleted_count > 0
-
