@@ -23,7 +23,7 @@ db = client[MONGODB_DB]
 users_col = db["users"]
 reports_col = db["reports"]
 chats_col = db["chats"]
-messages_col = db["messages"]
+messages_col = db["rag_messages"]
 documents_col = db["rag_documents"]
 uploads_col = db["uploads"]
 
