@@ -27,28 +27,11 @@ import {
 import { useToast } from "@/hooks/use-toast";
 import { useSocket } from "@/hooks/use-socket";
 import apiService from "@/lib/api";
+import { STAGE_COLORS, ACTION_LABELS, ACTION_COLORS } from "@/constants";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Tab = "overview" | "doctors" | "users" | "analytics" | "audit";
-
-const STAGE_COLORS = ["#10b981", "#3b82f6", "#eab308", "#f97316", "#ef4444"];
-
-const ACTION_LABELS: Record<string, string> = {
-  DOCTOR_VERIFIED:   "Doctor Verified",
-  DOCTOR_UNVERIFIED: "Doctor Unverified",
-  USER_SUSPENDED:    "User Suspended",
-  USER_UNSUSPENDED:  "User Unsuspended",
-  ADMIN_CREATED:     "Admin Created",
-};
-
-const ACTION_COLORS: Record<string, string> = {
-  DOCTOR_VERIFIED:   "bg-green-100 text-green-800 border-green-200",
-  DOCTOR_UNVERIFIED: "bg-red-100 text-red-800 border-red-200",
-  USER_SUSPENDED:    "bg-red-100 text-red-800 border-red-200",
-  USER_UNSUSPENDED:  "bg-blue-100 text-blue-800 border-blue-200",
-  ADMIN_CREATED:     "bg-purple-100 text-purple-800 border-purple-200",
-};
 
 // ─── CSV export helper ────────────────────────────────────────────────────────
 

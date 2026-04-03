@@ -17,41 +17,11 @@
  */
 
 import cron from 'node-cron';
-import nodemailer from 'nodemailer';
+import { sendEmail } from './utils/email.js';
 import Reminder from './models/Reminder.js';
 import Appointment from './models/Appointment.js';
 import User from './models/User.js';
 import FailedJob from './models/FailedJob.js';
-
-// ─── Mailer ───────────────────────────────────────────────────────────────────
-// Create the transporter once at module load — reusing the same SMTP connection
-// pool is significantly more efficient than creating a new one per email.
-
-const _transporter = (process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS)
-  ? nodemailer.createTransport({
-      host:   process.env.EMAIL_HOST,
-      port:   parseInt(process.env.EMAIL_PORT || '587'),
-      secure: process.env.EMAIL_PORT === '465',
-      auth: {
-        user: process.env.EMAIL_USER,
-        pass: process.env.EMAIL_PASS,
-      },
-    })
-  : null;
-
-async function sendEmail(to, subject, html) {
-  if (!_transporter) {
-    console.log(`[CRON EMAIL] To: ${to} | Subject: ${subject}`);
-    return;
-  }
-  // Let errors propagate so the caller can catch them for the DLQ
-  await _transporter.sendMail({
-    from: `"MeddyCare" <${process.env.EMAIL_USER}>`,
-    to,
-    subject,
-    html,
-  });
-}
 
 // ─── DLQ helper ─────────────────────────────────────────────────────────────
 /**

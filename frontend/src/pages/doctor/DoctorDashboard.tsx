@@ -25,6 +25,7 @@ import {
   type SocketConsultationUpdatedPayload,
 } from "@/hooks/use-socket";
 import { useNotifications } from "@/contexts/NotificationContext";
+import { STAGE_COLORS, STAGE_NAMES, STATUS_COLORS } from "@/constants";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -88,14 +89,6 @@ interface AnalyticsData {
 }
 type StatusFilter = "all" | "pending" | "in_review" | "completed" | "cancelled";
 
-const STAGE_COLORS = ["#10b981", "#3b82f6", "#eab308", "#f97316", "#ef4444"];
-const STAGE_NAMES  = ["No DR", "Mild", "Moderate", "Severe", "Proliferative"];
-const STATUS_COLORS: Record<string, string> = {
-  pending:    "bg-yellow-100 text-yellow-800 border-yellow-200",
-  in_review:  "bg-blue-100   text-blue-800   border-blue-200",
-  completed:  "bg-green-100  text-green-800  border-green-200",
-  cancelled:  "bg-gray-100   text-gray-600   border-gray-200",
-};
 
 function patientAge(dob?: string) {
   if (!dob) return null;

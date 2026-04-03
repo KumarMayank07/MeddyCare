@@ -5,7 +5,9 @@
  * Usage:
  *   node seed-admin.js
  *
- * Reads MONGODB_URI from .env in the same directory.
+ * Reads credentials and MONGODB_URI from .env in the same directory.
+ * Required env vars: MONGODB_URI, ADMIN_EMAIL, ADMIN_PASSWORD
+ * Optional env vars: ADMIN_FIRST (default "Meddy"), ADMIN_LAST (default "Admin")
  */
 
 import mongoose from 'mongoose';
@@ -14,10 +16,15 @@ import User from './models/User.js';
 
 dotenv.config();
 
-const ADMIN_EMAIL    = 'meddycare111@gmail.com';
-const ADMIN_PASSWORD = 'Mayank2001@';
-const ADMIN_FIRST    = 'Meddy';
-const ADMIN_LAST     = 'Admin';
+const ADMIN_EMAIL    = process.env.ADMIN_EMAIL;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD;
+const ADMIN_FIRST    = process.env.ADMIN_FIRST || 'Meddy';
+const ADMIN_LAST     = process.env.ADMIN_LAST  || 'Admin';
+
+if (!ADMIN_EMAIL || !ADMIN_PASSWORD) {
+  console.error('❌ ADMIN_EMAIL and ADMIN_PASSWORD must be set in .env');
+  process.exit(1);
+}
 
 async function seed() {
   try {
@@ -46,7 +53,6 @@ async function seed() {
     });
     await admin.save();
     console.log(`✅ Admin created: ${ADMIN_EMAIL}`);
-    console.log(`   Password: ${ADMIN_PASSWORD}`);
   } catch (err) {
     console.error('❌ Seed error:', err.message);
   } finally {

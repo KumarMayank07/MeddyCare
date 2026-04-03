@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useRef, useState } from "react";
 import { useSocket } from "@/hooks/use-socket";
 import { useAuth } from "@/contexts/AuthContext";
+import { NOTIFICATION_HISTORY_LIMIT } from "@/constants";
 
 export interface AppNotification {
   id: string;
@@ -43,7 +44,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
   function add(n: Omit<AppNotification, "id" | "timestamp" | "read">) {
     const id = `notif-${Date.now()}-${++counterRef.current}`;
-    setNotifications(prev => [{ ...n, id, timestamp: new Date(), read: false }, ...prev].slice(0, 50));
+    setNotifications(prev => [{ ...n, id, timestamp: new Date(), read: false }, ...prev].slice(0, NOTIFICATION_HISTORY_LIMIT));
   }
 
   useEffect(() => {

@@ -31,6 +31,7 @@ import {
 import { useTheme } from "@/hooks/use-theme";
 import { useSocket } from "@/hooks/use-socket";
 import apiService from "@/lib/api";
+import { STAGE_COLORS, STAGE_NAMES } from "@/constants";
 
 interface Report {
   _id: string;
@@ -59,8 +60,6 @@ interface Appointment {
   };
 }
 
-const STAGE_COLORS = ["#10b981", "#3b82f6", "#f59e0b", "#f97316", "#ef4444"];
-const STAGE_NAMES  = ["No DR", "Mild", "Moderate", "Severe", "Prolif."];
 
 export default function UserDashboard() {
   const [reports, setReports] = useState<Report[]>([]);
@@ -93,8 +92,8 @@ export default function UserDashboard() {
     try {
       const { reports: data } = await apiService.getReports();
       setReports(data || []);
-    } catch (err) {
-      console.error("Failed to fetch reports", err);
+    } catch {
+      // UI gracefully shows empty state
     } finally {
       setLoading(false);
     }
@@ -121,8 +120,8 @@ export default function UserDashboard() {
         const appts = prev.filter(i => i.type === "appointment");
         return [...todayReminders, ...appts].sort((a, b) => a.time.getTime() - b.time.getTime());
       });
-    } catch (err) {
-      console.error("Failed to fetch reminders", err);
+    } catch {
+      // UI gracefully shows empty state
     }
   };
 
@@ -144,8 +143,8 @@ export default function UserDashboard() {
         const reminders = prev.filter(i => i.type === "reminder");
         return [...reminders, ...todayAppts].sort((a, b) => a.time.getTime() - b.time.getTime());
       });
-    } catch (err) {
-      console.error("Failed to fetch appointments", err);
+    } catch {
+      // UI gracefully shows empty state
     }
   };
 

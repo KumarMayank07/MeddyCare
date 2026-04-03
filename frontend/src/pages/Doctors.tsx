@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import apiService from "@/lib/api";
 import type { ClinicPin } from "@/components/DoctorMap";
+import { SPECIALIZATIONS_FILTER, DOCTORS_PER_PAGE } from "@/constants";
 
 const DoctorMap = lazy(() => import("@/components/DoctorMap"));
 
@@ -25,13 +26,6 @@ interface Doctor {
   contact?: { phone?: string | null; email?: string | null; website?: string | null };
 }
 
-const SPECIALIZATIONS = [
-  "All",
-  "Retina Specialist",
-  "Ophthalmologist",
-  "Optometrist",
-  "General Eye Care",
-];
 
 const doctorLatLng = (d: Doctor): [number, number] | null => {
   try {
@@ -107,7 +101,6 @@ export default function Doctors() {
   const [specFilter, setSpecFilter] = useState("All");
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
-  const DOCTORS_PER_PAGE = 12;
   // Track doctorIds the current user has already reviewed (optimistic + from data)
   const [reviewedIds, setReviewedIds] = useState<Set<string>>(new Set());
 
@@ -341,7 +334,7 @@ export default function Doctors() {
             <Select value={specFilter} onValueChange={(v) => { setPage(1); setSpecFilter(v); }}>
               <SelectTrigger><SelectValue /></SelectTrigger>
               <SelectContent>
-                {SPECIALIZATIONS.map((s) => (
+                {SPECIALIZATIONS_FILTER.map((s) => (
                   <SelectItem key={s} value={s}>{s}</SelectItem>
                 ))}
               </SelectContent>

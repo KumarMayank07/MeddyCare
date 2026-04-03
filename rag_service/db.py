@@ -26,6 +26,7 @@ chats_col = db["chats"]
 messages_col = db["rag_messages"]
 documents_col = db["rag_documents"]
 uploads_col = db["uploads"]
+shared_chats_col = db["shared_chats"]
 
 
 async def create_indexes() -> None:

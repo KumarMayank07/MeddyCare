@@ -98,20 +98,15 @@ const authLimiter = rateLimit({
 app.use(express.json({ limit: "3mb" }));
 app.use(express.urlencoded({ extended: true, limit: "3mb" }));
 
-// Database connection with better error handling
+// Database connection
 const connectDB = async () => {
   try {
-    if (!process.env.MONGODB_URI) {
-      throw new Error("MONGODB_URI is not defined in environment variables");
-    }
-
     console.log("Attempting to connect to MongoDB...");
     await mongoose.connect(process.env.MONGODB_URI);
     console.log("✅ Connected to MongoDB successfully");
     startCronJobs();
   } catch (error) {
     console.error("❌ MongoDB connection error:", error.message);
-    console.error("Please check your MONGODB_URI in the .env file");
     process.exit(1);
   }
 };

@@ -72,11 +72,7 @@ router.post("/image", auth, upload.single("image"), async (req, res) => {
     });
   } catch (error) {
     console.error("Image upload error:", error.message);
-    console.error("Error details:", error);
-    res.status(500).json({
-      error: "Server error while uploading image",
-      details: error.message,
-    });
+    res.status(500).json({ error: "Server error while uploading image" });
   }
 });
 

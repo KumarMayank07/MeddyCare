@@ -23,10 +23,6 @@ RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", 20))  # fetch this many b
 
 # ── Google GenAI ──────────────────────────────────────────────────────────────
 GOOGLE_GENAI_API_KEY = os.getenv("GOOGLE_GENAI_API_KEY", "")
-# GOOGLE_GENAI_MODEL is no longer used for generation — Groq handles that now.
-# Gemini free-tier exhausts its daily generate_content quota (limit: 0 error)
-# very quickly, making the chat unusable. Embeddings still use Gemini fine.
-# GOOGLE_GENAI_MODEL = os.getenv("GOOGLE_GENAI_MODEL", "gemini-2.0-flash")
 EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "gemini-embedding-001")
 
 # ── Groq (answer generation + reranking) ──────────────────────────────────────
@@ -41,13 +37,7 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 GROQ_RERANK_MODEL = os.getenv("GROQ_RERANK_MODEL", "llama-3.1-8b-instant")
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
-_DEFAULT_JWT_SECRET = "clarity_retina_care_jwt_secret_key_2024_secure_32_chars"
-JWT_SECRET = os.getenv("JWT_SECRET_KEY", _DEFAULT_JWT_SECRET)
-if JWT_SECRET == _DEFAULT_JWT_SECRET:
-    logger.warning(
-        "JWT_SECRET_KEY is using the insecure default. "
-        "Set a strong, unique secret in your environment before deploying."
-    )
+JWT_SECRET = os.getenv("JWT_SECRET_KEY", "")
 
 # ── Startup validation — fail fast for required credentials ───────────────────
 import sys as _sys
@@ -59,6 +49,8 @@ if not GROQ_API_KEY:
     _MISSING_VARS.append("GROQ_API_KEY")
 if not os.getenv("MONGODB_URI"):
     _MISSING_VARS.append("MONGODB_URI")
+if not JWT_SECRET:
+    _MISSING_VARS.append("JWT_SECRET_KEY")
 
 if _MISSING_VARS:
     logger.error(

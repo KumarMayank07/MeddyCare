@@ -46,7 +46,7 @@ export default function Reminders() {
       const { reminders: data } = await apiService.getReminders();
       setReminders(data || []);
     } catch (err) {
-      console.error(err);
+      toast({ title: "Failed to load reminders", description: (err as Error).message, variant: "destructive" });
     } finally {
       setLoading(false);
     }

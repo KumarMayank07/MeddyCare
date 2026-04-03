@@ -5,6 +5,7 @@ import User from '../models/User.js';
 import Consultation from '../models/Consultation.js';
 import { auth, doctorAuth } from '../middleware/auth.js';
 import { doctorListCache } from '../cache.js';
+import { STAGE_LABELS, DAY_NAMES } from '../constants.js';
 
 const router = express.Router();
 
@@ -144,10 +145,9 @@ router.get('/analytics', doctorAuth, async (req, res) => {
     }));
 
     // Stage labels for patient risk
-    const stageLabels = ['No DR', 'Mild', 'Moderate', 'Severe', 'Proliferative'];
     const patientRiskTiers = ratingBreakdown.map(r => ({
       stage: r._id,
-      label: stageLabels[r._id] ?? `Stage ${r._id}`,
+      label: STAGE_LABELS[r._id] ?? `Stage ${r._id}`,
       count: r.count,
     }));
 
@@ -198,7 +198,6 @@ router.get('/:id/slots', async (req, res) => {
     const doctor = await Doctor.findById(req.params.id);
     if (!doctor) return res.status(404).json({ error: 'Doctor not found' });
 
-    const DAY_NAMES = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
     const dayName = DAY_NAMES[new Date(date).getDay()];
     const avail = doctor.availability?.[dayName];
 

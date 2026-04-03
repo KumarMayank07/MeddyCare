@@ -25,7 +25,7 @@ from config import (
     SITE_TITLE,
     TOP_K,
 )
-from db import chats_col, delete_chat_and_messages, documents_col, messages_col
+from db import chats_col, delete_chat_and_messages, documents_col, messages_col, shared_chats_col
 from ingest import ingest_pdf_bytes, ingest_url
 from models import ChatRequest, ChatResponse, IngestURLRequest, UpdateChatRequest
 from rate_limiter import rate_limit_chat
@@ -575,7 +575,7 @@ async def share_chat(chat_id: str, request: Request, user=Depends(get_current_us
     if chat.get("user_id") != user["_id"] and user.get("role") != "admin":
         raise HTTPException(status_code=403, detail="Access denied.")
 
-    shares_col = chats_col.database.get_collection("shared_chats")
+    shares_col = shared_chats_col
     token = secrets.token_urlsafe(16)
     now = _utcnow()
     expires_at = now + timedelta(days=SHARE_EXPIRE_DAYS)
@@ -606,7 +606,7 @@ async def share_chat(chat_id: str, request: Request, user=Depends(get_current_us
 
 @router.get("/s/{token}", name="get_shared_chat")
 async def get_shared_chat(token: str, request: Request, format: Optional[str] = None):
-    shares_col = chats_col.database.get_collection("shared_chats")
+    shares_col = shared_chats_col
     share = await shares_col.find_one({"token": token})
     if not share:
         raise HTTPException(status_code=404, detail="Shared link not found.")

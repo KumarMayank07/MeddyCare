@@ -751,7 +751,7 @@ MeddyCare/
 │       │   ├── use-socket.ts           # Singleton Socket.io hook with ref counting
 │       │   ├── use-theme.ts            # Dark/light mode
 │       │   └── use-mobile.tsx          # Responsive breakpoint
-│       ├── lib/api.ts                  # Axios API service — all endpoints, auto-retry on 401
+│       ├── lib/api.ts                  # Custom Fetch API service — all endpoints, auto-refresh on 401, retry on 502/503/504/429
 │       ├── pages/
 │       │   ├── Index.tsx               # Landing page
 │       │   ├── Auth.tsx                # Login / Register / Doctor signup

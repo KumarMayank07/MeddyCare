@@ -8,6 +8,7 @@ import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/contexts/AuthContext";
 import apiService from "@/lib/api";
 import { Eye, EyeOff, ChevronDown, MapPin, Loader2, CheckCircle } from "lucide-react";
+import { SPECIALIZATIONS } from "@/constants";
 
 type Role = "user" | "doctor" | "admin";
 
@@ -15,13 +16,6 @@ const ROLES: { value: Role; label: string }[] = [
   { value: "user", label: "User" },
   { value: "doctor", label: "Doctor" },
   { value: "admin", label: "Admin" },
-];
-
-const SPECIALIZATIONS = [
-  "Retina Specialist",
-  "Ophthalmologist",
-  "Optometrist",
-  "General Eye Care",
 ];
 
 export default function Auth() {

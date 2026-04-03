@@ -290,7 +290,13 @@ router.get('/:id/messages', auth, async (req, res) => {
 
     const limit = Math.min(parseInt(req.query.limit) || 50, 100);
     const filter = { consultationId: req.params.id };
-    if (req.query.before) filter.timestamp = { $lt: new Date(req.query.before) };
+    if (req.query.before) {
+      const before = new Date(req.query.before);
+      if (isNaN(before.getTime())) {
+        return res.status(400).json({ error: 'Invalid before timestamp' });
+      }
+      filter.timestamp = { $lt: before };
+    }
 
     const messages = await Message.find(filter)
       .sort({ timestamp: -1 })

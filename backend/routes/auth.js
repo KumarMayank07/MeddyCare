@@ -17,17 +17,7 @@ async function notifyAdmins(event, data = {}) {
 const router = express.Router();
 
 // ── Email helper ─────────────────────────────────────────────────────────────
-import nodemailer from "nodemailer";
-
-const _verifyTransporter =
-  process.env.EMAIL_HOST && process.env.EMAIL_USER && process.env.EMAIL_PASS
-    ? nodemailer.createTransport({
-        host: process.env.EMAIL_HOST,
-        port: parseInt(process.env.EMAIL_PORT || "587"),
-        secure: process.env.EMAIL_PORT === "465",
-        auth: { user: process.env.EMAIL_USER, pass: process.env.EMAIL_PASS },
-      })
-    : null;
+import { sendEmail } from "../utils/email.js";
 
 async function sendVerificationEmail(email, firstName, token) {
   const verifyUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/verify-email?token=${token}`;
@@ -98,18 +88,12 @@ async function sendVerificationEmail(email, firstName, token) {
       </table>
     </body></html>`;
 
-  if (!_verifyTransporter) {
-    console.log(`\n[DEV] Verification email for ${email}:`);
-    console.log(`  Link: ${verifyUrl}\n`);
-    return;
+  // In dev (no SMTP), log the link so developers can verify accounts easily
+  if (!process.env.EMAIL_HOST) {
+    console.log(`\n[DEV] Verification link for ${email}:\n  ${verifyUrl}\n`);
   }
 
-  await _verifyTransporter.sendMail({
-    from: `"MeddyCare" <${process.env.EMAIL_USER}>`,
-    to: email,
-    subject: "Verify your MeddyCare account",
-    html,
-  });
+  await sendEmail(email, "Verify your MeddyCare account", html);
 }
 
 // ── Token generator ───────────────────────────────────────────────────────────

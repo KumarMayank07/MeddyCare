@@ -1,6 +1,7 @@
 # rag_service/auth.py
 import logging
 
+from bson import ObjectId
 from fastapi import Depends, HTTPException
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
@@ -26,7 +27,6 @@ async def get_current_user(
             raise HTTPException(status_code=401, detail="Invalid token payload.")
 
         # Check suspension status in MongoDB (matches backend behaviour)
-        from bson import ObjectId
         try:
             user_doc = await users_col.find_one(
                 {"_id": ObjectId(user_id)},

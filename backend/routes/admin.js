@@ -9,6 +9,7 @@ import AuditLog from '../models/AuditLog.js';
 import { adminAuth } from '../middleware/auth.js';
 import { emitToUser } from '../socket.js';
 import { statsCache } from '../cache.js';
+import { STAGE_LABELS, STAGE_COLORS } from '../constants.js';
 
 const router = express.Router();
 
@@ -70,8 +71,7 @@ router.get('/stats', adminAuth, async (req, res) => {
       Appointment.countDocuments(),
     ]);
 
-    const stageLabels = ['No DR', 'Mild', 'Moderate', 'Severe', 'Proliferative'];
-    const distribution = stageLabels.map((label, idx) => {
+    const distribution = STAGE_LABELS.map((label, idx) => {
       const found = stageDistribution.find(s => s._id === idx);
       return { stage: idx, label, count: found ? found.count : 0 };
     });
@@ -217,11 +217,9 @@ router.get('/analytics', adminAuth, async (req, res) => {
     appointmentAgg.forEach(({ _id, count }) => { if (_id in apptMap) apptMap[_id] = count; });
     const totalAppointments = Object.values(apptMap).reduce((a, b) => a + b, 0);
 
-    const stageLabels = ['No DR', 'Mild', 'Moderate', 'Severe', 'Proliferative'];
-    const stageColors = ['#10b981', '#3b82f6', '#eab308', '#f97316', '#ef4444'];
-    const stageDist = stageLabels.map((label, idx) => {
+    const stageDist = STAGE_LABELS.map((label, idx) => {
       const found = stageDistribution.find(s => s._id === idx);
-      return { stage: idx, label, count: found ? found.count : 0, fill: stageColors[idx] };
+      return { stage: idx, label, count: found ? found.count : 0, fill: STAGE_COLORS[idx] };
     });
 
     // Patient risk tiers based on highest stage per patient
